@@ -1,0 +1,13 @@
+{
+  "name": "maccontrol_core",
+  "version": "0.1.0",
+  "description": "MacControl Phase 1 core: deterministic command ledger, Mode A lifecycle, RBAC, capabilities/status documents. Pure C++17, host-testable.",
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": {
+    "bblanchon/ArduinoJson": "^7.2.0"
+  },
+  "build": {
+    "flags": ["-std=gnu++17"]
+  }
+}

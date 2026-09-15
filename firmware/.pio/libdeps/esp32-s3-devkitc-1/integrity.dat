@@ -1,0 +1,3 @@
+maccontrol_core = symlink://lib/maccontrol_core
+bblanchon/ArduinoJson @ ^7.2.0
+throwtheswitch/Unity@^2.6.1
