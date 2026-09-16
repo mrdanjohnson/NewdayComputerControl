@@ -22,6 +22,7 @@ private:
     void cmdNtp(const std::vector<std::string>& args);
     void cmdStatus();
     void cmdReboot();
+    void cmdAdmin(const std::vector<std::string>& args);
 
     AppContext* ctx_ = nullptr;
     std::string line_buf_;

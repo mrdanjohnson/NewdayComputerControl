@@ -1,5 +1,6 @@
 #include "hid_keyboard.h"
 #include <Arduino.h>
+#include <string.h>
 
 // Classic ESP32 (ESP32/ESP32-D0WD, e.g. ESP-WROOM-32) has no native USB
 // device controller — its USB port is a UART bridge, so TinyUSB HID cannot
@@ -113,6 +114,66 @@ bool HidKeyboard::send_chord(mcco::CommandType type) {
     return send_once(type);
 #else
     (void)type;
+    return false;
+#endif
+}
+
+uint8_t HidKeyboard::modifierUsage(const char* name) {
+    if (!name) return 0;
+    if (strcmp(name, "ctrl") == 0) return 0xE0;
+    if (strcmp(name, "shift") == 0) return 0xE1;
+    if (strcmp(name, "alt") == 0) return 0xE2;
+    if (strcmp(name, "cmd") == 0) return 0xE3;
+    return 0;
+}
+
+bool HidKeyboard::keyDown(uint8_t code) {
+#if MC_HAS_USB_HID
+    if (!tud_mounted()) return false;
+    Keyboard.pressRaw(code);
+    return true;
+#else
+    (void)code;
+    return false;
+#endif
+}
+
+bool HidKeyboard::keyUp(uint8_t code) {
+#if MC_HAS_USB_HID
+    if (!tud_mounted()) return false;
+    Keyboard.releaseRaw(code);
+    return true;
+#else
+    (void)code;
+    return false;
+#endif
+}
+
+bool HidKeyboard::allKeysUp() {
+#if MC_HAS_USB_HID
+    if (!tud_mounted()) return false;
+    Keyboard.releaseAll();
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool HidKeyboard::typeText(const char* s, size_t len, uint32_t inter_key_ms) {
+#if MC_HAS_USB_HID
+    if (!s || !tud_mounted()) return false;
+    for (size_t i = 0; i < len; i++) {
+        if (!tud_mounted()) return false; // USB dropped mid-text
+        uint8_t c = (uint8_t)s[i];
+        if (c < 0x20 && c != '\n' && c != '\t') continue; // non-printable: skip
+        Keyboard.write(c); // press+release; ASCII path adds shift when needed
+        if (inter_key_ms) delay(inter_key_ms);
+    }
+    return true;
+#else
+    (void)s;
+    (void)len;
+    (void)inter_key_ms;
     return false;
 #endif
 }

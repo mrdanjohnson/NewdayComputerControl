@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -50,7 +51,42 @@ public:
     // Mode A dispatch completion: appends `dispatched`, then immediately the
     // terminal verdict — `unconfirmed`/`hid_only` on success (never
     // `completed` in Mode A), `failed`/`dispatch_error` on HID failure.
-    bool complete_dispatch(const std::string& command_id, bool dispatch_ok);
+    // `deadline_override_s` lets the dispatcher set the authoritative
+    // per-macro deadline (timeout_ms/1000 + 5, spec 10.3.1); 0 keeps the
+    // per-type default.
+    bool complete_dispatch(const std::string& command_id, bool dispatch_ok,
+                           uint32_t deadline_override_s = 0);
+
+    // ---- Macro dispatch pipeline (spec 10.3.1) ------------------------------
+    // Macros interpret *after* the `dispatched` revision, unlike power chords
+    // which terminate immediately in complete_dispatch. All three follow the
+    // same Mode A verdict rules (spec 5.2.2): the ESP32 alone appends terminal
+    // revisions; `completed` remains unreachable without MCA evidence.
+    //
+    // fail_dispatch: terminal `failed` with the given error_code from an
+    //   `accepted` (or `dispatched`) record — used for the 30 s dispatch-delay
+    //   bound (error_code "dispatch_delayed", spec 10.3.1) and for macros whose
+    //   definition vanished between accept and dequeue.
+    bool fail_dispatch(const std::string& command_id, const char* error_code);
+    // mark_dispatched: accepted -> dispatched only, with the authoritative
+    //   deadline (dispatched_at + deadline_s, the per-macro timeout_ms/1000+5
+    //   of spec 10.3.1). The terminal verdict follows interpretation.
+    bool mark_dispatched(const std::string& command_id, uint32_t deadline_s);
+    // terminate_mode_a: dispatched -> terminal. ok=true appends
+    //   `unconfirmed`/`hid_only`; ok=false appends `failed`/`dispatch_error`
+    //   (mirrors the private logic of complete_dispatch).
+    bool terminate_mode_a(const std::string& command_id, bool ok);
+
+    // Macro store hook (spec 10.3): the HTTP layer resolves macro_id against
+    // the MacroStore before the engine persists a macro_execute submission;
+    // an unknown id terminates pre-ledger as 404 not_found.
+    struct MacroResolution {
+        bool found = false;
+        uint32_t timeout_ms = 10000;
+    };
+    void set_macro_resolver(std::function<MacroResolution(const std::string& macro_id)> r) {
+        macro_resolver_ = std::move(r);
+    }
 
     // Resolve non-terminal records after reboot (spec 5.1.1). Returns count.
     size_t reconcile_boot();
@@ -83,6 +119,7 @@ private:
     };
     std::map<std::string, IdemEntry> explicit_keys_;
     std::map<std::string, std::string> hash_by_command_; // derived-coalescing hashes
+    std::function<MacroResolution(const std::string&)> macro_resolver_;
     static constexpr uint64_t kCoalesceWindowS = 60; // spec 5.1.1
 };
 

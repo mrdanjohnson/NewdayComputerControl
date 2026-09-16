@@ -13,10 +13,13 @@
 #include "mc_auth.h"
 #include "mc_engine.h"
 #include "mc_log.h"
+#include "mc_macro.h"
 #include "mc_rate_limit.h"
 #include "mdns_service.h"
 #include "nvs_config.h"
 #include "status_cache.h"
+#include "trigger_store.h"
+#include "web_ui.h"
 #include "wifi_mgr.h"
 
 namespace {
@@ -32,6 +35,9 @@ mcco::Ledger g_ledger(g_ledger_storage, g_clock, g_log);
 mcco::CommandEngine g_engine(g_ledger, g_clock, g_rng, g_log);
 mcco::KeyStore g_keys;
 mcco::RateLimiter g_limiter(g_clock);
+mcco::MacroStore g_macros;
+TriggerStore g_triggers;
+WebUi g_web_ui;
 HidKeyboard g_hid;
 CommandDispatcher g_dispatcher;
 StatusCache g_status_cache;
@@ -88,6 +94,39 @@ void setup() {
     ctx.keys = &g_keys;
     ctx.limiter = &g_limiter;
 
+    // Phase 2: macro store + trigger bindings (spec ch. 10). Loaded before
+    // the HTTP surface begins; any skipped corrupt line latches store_corrupt
+    // (spec 15.1) until a successful persistence write clears it.
+    ctx.macros = &g_macros;
+    {
+        std::vector<std::string> lines;
+        if (g_config.loadMacroLines(lines)) {
+            const size_t skipped = g_macros.load(lines);
+            if (skipped > 0) {
+                ctx.store_corrupt = true;
+                g_log.write(mcco::LogCategory::Config, mcco::LogLevel::Error, "macro_store_corrupt",
+                            nullptr, nullptr, nullptr,
+                            (std::string("{\"skipped\":") + std::to_string(skipped) + "}")
+                                .c_str());
+            }
+        }
+    }
+    ctx.triggers = &g_triggers;
+    {
+        std::vector<std::string> lines;
+        if (g_config.loadTriggerLines(lines)) {
+            const size_t skipped = g_triggers.load(lines);
+            if (skipped > 0) {
+                g_log.write(mcco::LogCategory::Config, mcco::LogLevel::Warn,
+                            "trigger_store_lines_skipped", nullptr, nullptr, nullptr,
+                            (std::string("{\"skipped\":") + std::to_string(skipped) + "}")
+                                .c_str());
+            }
+        }
+    }
+    ctx.web_ui = &g_web_ui;
+    g_web_ui.begin(&ctx);
+
     // Wall clock: SNTP against the NVS-configured server (UTC).
     g_clock.beginSntp(g_config.ntpServer());
 
@@ -99,6 +138,21 @@ void setup() {
         ESP.restart();
     }
     ctx.engine = &g_engine;
+    // Macro resolver (spec 10.3): the engine checks macro existence pre-ledger
+    // through this hook. submit() is invoked with engine_mutex already held
+    // at every call site, so the resolver itself MUST NOT take the lock
+    // (FreeRTOS mutexes are not recursive).
+    g_engine.set_macro_resolver([](const std::string& macro_id) {
+        mcco::CommandEngine::MacroResolution res;
+        if (ctx.macros) {
+            const mcco::Macro* m = ctx.macros->get(macro_id);
+            if (m) {
+                res.found = true;
+                res.timeout_ms = m->timeout_ms;
+            }
+        }
+        return res;
+    });
     char recon_detail[64];
     snprintf(recon_detail, sizeof(recon_detail), "{\"ms\":%u,\"commands\":%u}",
              (unsigned)(millis() - boot_start_ms), (unsigned)g_ledger.command_count());
@@ -120,6 +174,7 @@ void setup() {
 
     ctx.status_cache = &g_status_cache;
     g_status_cache.begin(&ctx);
+    ctx.status_cache->onMacrosChanged(); // advertise the loaded macro ids (12.3.1)
 
     ctx.wifi = &g_wifi;
     g_wifi.begin(&ctx);
@@ -133,6 +188,9 @@ void setup() {
     ctx.dispatcher = &g_dispatcher;
     g_dispatcher.begin(&ctx);
 
+    // GPIO bindings attach after everything they invoke is wired.
+    g_triggers.begin(&ctx);
+
     g_http.begin(&ctx, 80);
 
     Serial.printf("init complete in %u ms\n", (unsigned)(millis() - boot_start_ms));
@@ -145,6 +203,23 @@ void loop() {
     // Lazily persist key last_used_at mutations (bounds NVS flash wear).
     if (ctx.keys_dirty.exchange(false)) {
         g_config.persistKeys(g_keys);
+    }
+    // Lazily persist macro store and trigger mutations (spec 15.1). A
+    // successful write is also what clears the sticky store_corrupt latch.
+    if (ctx.macros_dirty.exchange(false)) {
+        if (g_config.persistMacroLines(g_macros.dump())) {
+            if (ctx.store_corrupt.exchange(false)) {
+                g_log.write(mcco::LogCategory::Config, mcco::LogLevel::Warn,
+                            "macro_store_recovered", nullptr, nullptr, nullptr, nullptr);
+            }
+        } else {
+            ctx.macros_dirty = true; // retry on the next pass
+        }
+    }
+    if (ctx.triggers_dirty.exchange(false)) {
+        if (!g_config.persistTriggerLines(g_triggers.dump())) {
+            ctx.triggers_dirty = true;
+        }
     }
     delay(10);
 }

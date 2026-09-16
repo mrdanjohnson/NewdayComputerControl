@@ -12,6 +12,9 @@ enum class ErrCode {
     NotFound,
     Conflict,
     AgentNotPaired,
+    MacroInvalidStep, // 400 macro_invalid_step (spec 10.1.1)
+    MacroQueueFull,   // 409 macro_queue_full (spec 10.3.1)
+    StoreCorrupt,     // 409 store_corrupt (spec 15.1)
     RateLimited,
     InternalError,
     LedgerUnavailable,

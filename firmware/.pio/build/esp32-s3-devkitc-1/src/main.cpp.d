@@ -194,8 +194,8 @@
  src/log_sink.h lib/maccontrol_core/mc_log.h \
  lib/maccontrol_core/mc_auth.h lib/maccontrol_core/mc_engine.h \
  lib/maccontrol_core/mc_error.h lib/maccontrol_core/mc_ids.h \
- lib/maccontrol_core/mc_rate_limit.h src/mdns_service.h \
- lib/maccontrol_core/mc_status.h \
+ lib/maccontrol_core/mc_macro.h lib/maccontrol_core/mc_rate_limit.h \
+ src/mdns_service.h lib/maccontrol_core/mc_status.h \
  .pio/libdeps/esp32-s3-devkitc-1/ArduinoJson/src/ArduinoJson.h \
  .pio/libdeps/esp32-s3-devkitc-1/ArduinoJson/src/ArduinoJson.hpp \
  .pio/libdeps/esp32-s3-devkitc-1/ArduinoJson/src/ArduinoJson/Configuration.hpp \
@@ -203,4 +203,4 @@
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
  src/status_cache.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/freertos/include/freertos/timers.h \
- src/wifi_mgr.h
+ src/trigger_store.h src/web_ui.h src/wifi_mgr.h

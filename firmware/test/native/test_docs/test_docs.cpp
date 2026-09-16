@@ -15,7 +15,7 @@ const mcco::Identity kIdentity{"ProPresenter Mac", "mac-a1b2c3", "Stage booth", 
 
 TEST(Docs, CapabilitiesModeAExactCommandSurface) {
     JsonDocument doc;
-    mcco::build_capabilities_mode_a(doc, kIdentity);
+    mcco::build_capabilities_mode_a(doc, kIdentity, {"mac_3F81"});
 
     EXPECT_EQ(std::string(doc["api_version"] | "?"), "v1");
     EXPECT_EQ(std::string(doc["mode"] | "?"), "A");
@@ -45,8 +45,12 @@ TEST(Docs, CapabilitiesModeAExactCommandSurface) {
     EXPECT_TRUE(cmds["lock"]["available"].as<bool>());
     EXPECT_EQ(cmds["lock"]["deadline_s"].as<int>(), 15);
 
-    // Phase 1: macros and agent-dependent commands unavailable.
-    EXPECT_FALSE(cmds["macro_execute"]["available"].as<bool>());
+    // Macros are endpoint-local and executable in Mode A (spec 12.1.1); the
+    // advertised macro_ids must echo the store contents.
+    EXPECT_TRUE(cmds["macro_execute"]["available"].as<bool>());
+    EXPECT_EQ(cmds["macro_execute"]["macro_ids"].as<JsonArrayConst>().size(), 1u);
+    EXPECT_EQ(std::string(cmds["macro_execute"]["macro_ids"][0] | "?"), "mac_3F81");
+    // Agent-dependent commands unavailable in Mode A.
     EXPECT_FALSE(cmds["app_launch"]["available"].as<bool>());
     EXPECT_FALSE(cmds["app_quit"]["available"].as<bool>());
 

@@ -82,7 +82,8 @@ static void cmd_entry(JsonObject cmds, const char* name, bool available, int dea
     if (deadline_s > 0) e["deadline_s"] = deadline_s;
 }
 
-void build_capabilities_mode_a(JsonDocument& doc, const Identity& id) {
+void build_capabilities_mode_a(JsonDocument& doc, const Identity& id,
+                               const std::vector<std::string>& macro_ids) {
     doc.clear();
     doc["api_version"] = "v1";
     doc["mode"] = "A";
@@ -98,9 +99,10 @@ void build_capabilities_mode_a(JsonDocument& doc, const Identity& id) {
     cmd_entry(cmds, "shutdown", true, 120);
     cmd_entry(cmds, "lock", true, 15);
     JsonObject macro = cmds["macro_execute"].to<JsonObject>();
-    macro["available"] = false; // macro store ships in Phase 2
+    macro["available"] = true; // macro store is part of the endpoint (spec 12.1.1)
     macro["verified"] = false;
-    macro["macro_ids"].to<JsonArray>();
+    JsonArray ids = macro["macro_ids"].to<JsonArray>();
+    for (const auto& mid : macro_ids) ids.add(mid);
     for (const char* app : {"app_launch", "app_quit"}) {
         JsonObject e = cmds[app].to<JsonObject>();
         e["available"] = false; // agent-dependent: 409 agent_not_paired in Mode A

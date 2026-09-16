@@ -29,8 +29,8 @@ bool CommandEngine::validate_parameters(CommandType t, const std::string& params
         case CommandType::Lock:
             return o.size() == 0; // power commands carry no parameters
         case CommandType::MacroExecute:
-            // Phase 1 has no macro store; the schema is still validated here
-            // (400) before the 404 availability check in submit().
+            // The schema is validated here (400) before the 404 availability
+            // check against the wired macro store in submit().
             return o.size() == 1 && o["macro_id"].is<const char*>();
         case CommandType::AppLaunch:
         case CommandType::AppQuit:
@@ -58,10 +58,22 @@ SubmissionOutcome CommandEngine::submit(const Submission& sub) {
         out.error = ErrCode::AgentNotPaired; // pre-ledger: no record created
         return out;
     }
-    // macro_execute requires the macro store, which ships in Phase 2.
+    // macro_execute resolves against the macro store via the resolver hook
+    // (spec 10.3): unknown macro_id terminates pre-ledger as 404 not_found.
     if (sub.type == CommandType::MacroExecute) {
-        out.error = ErrCode::NotFound; // macro_id unknown: no macro store
-        return out;
+        if (macro_resolver_) {
+            JsonDocument pmd;
+            if (deserializeJson(pmd, sub.parameters_json)) return out; // validated earlier
+            const char* mid = pmd["macro_id"] | "";
+            MacroResolution res = macro_resolver_(mid);
+            if (!res.found) {
+                out.error = ErrCode::NotFound;
+                return out;
+            }
+        } else {
+            out.error = ErrCode::NotFound; // no macro store wired
+            return out;
+        }
     }
 
     const uint64_t now = clock_.epoch_seconds();
@@ -138,7 +150,8 @@ SubmissionOutcome CommandEngine::submit(const Submission& sub) {
     return out;
 }
 
-bool CommandEngine::complete_dispatch(const std::string& command_id, bool dispatch_ok) {
+bool CommandEngine::complete_dispatch(const std::string& command_id, bool dispatch_ok,
+                                      uint32_t deadline_override_s) {
     const CommandRecord* cur = ledger_.latest(command_id);
     if (!cur) return false;
     if (cur->state != CommandState::Accepted) return false;
@@ -148,13 +161,57 @@ bool CommandEngine::complete_dispatch(const std::string& command_id, bool dispat
     CommandRecord disp = *cur;
     disp.state = CommandState::Dispatched;
     disp.dispatched_at = now;
-    disp.deadline_at = now + default_deadline_s(disp.type); // authoritative at dispatch
+    // Authoritative deadline at dispatch (spec 5.3.1, 10.3.1).
+    disp.deadline_at =
+        now + (deadline_override_s ? deadline_override_s : default_deadline_s(disp.type));
     if (!ledger_.append_revision(disp)) return false;
 
     // Mode A (spec 5.2.2): dispatch success terminates immediately as
     // unconfirmed/hid_only. `completed` is unreachable without MCA evidence.
     CommandRecord term = disp;
     if (dispatch_ok) {
+        term.state = CommandState::Unconfirmed;
+        term.result = "hid_only";
+    } else {
+        term.state = CommandState::Failed;
+        term.error_code = "dispatch_error";
+    }
+    return ledger_.append_revision(term);
+}
+
+bool CommandEngine::fail_dispatch(const std::string& command_id, const char* error_code) {
+    const CommandRecord* cur = ledger_.latest(command_id);
+    if (!cur) return false;
+    if (cur->state != CommandState::Accepted && cur->state != CommandState::Dispatched)
+        return false;
+    CommandRecord term = *cur;
+    term.state = CommandState::Failed;
+    term.error_code = error_code;
+    return ledger_.append_revision(term);
+}
+
+bool CommandEngine::mark_dispatched(const std::string& command_id, uint32_t deadline_s) {
+    const CommandRecord* cur = ledger_.latest(command_id);
+    if (!cur) return false;
+    if (cur->state != CommandState::Accepted) return false;
+
+    CommandRecord disp = *cur;
+    disp.state = CommandState::Dispatched;
+    disp.dispatched_at = clock_.epoch_seconds();
+    // Authoritative deadline at dispatch (spec 5.3.1, 10.3.1).
+    disp.deadline_at = disp.dispatched_at + deadline_s;
+    return ledger_.append_revision(disp);
+}
+
+bool CommandEngine::terminate_mode_a(const std::string& command_id, bool ok) {
+    const CommandRecord* cur = ledger_.latest(command_id);
+    if (!cur) return false;
+    if (cur->state != CommandState::Dispatched) return false;
+
+    // Mode A (spec 5.2.2): success terminates `unconfirmed`/`hid_only`;
+    // `completed` is unreachable without MCA evidence.
+    CommandRecord term = *cur;
+    if (ok) {
         term.state = CommandState::Unconfirmed;
         term.result = "hid_only";
     } else {

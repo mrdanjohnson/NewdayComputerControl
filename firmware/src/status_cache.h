@@ -18,6 +18,7 @@ public:
 
     void onIdentityChanged(); // reload identity from ConfigStore, bump epoch
     void setNetworkUp(bool up); // pushed by WifiMgr on transitions
+    void onMacrosChanged(); // bump epoch + refresh advertised macro ids
 
     void buildStatus(JsonDocument& doc) const;
     void buildCapabilities(JsonDocument& doc) const;
@@ -38,5 +39,6 @@ private:
     uint64_t identity_observed_at_ = 0;
     uint32_t cache_epoch_ = 0;
     uint8_t probe_div_ = 0;
+    std::vector<std::string> macro_ids_; // refreshed on onMacrosChanged()
     mutable Mutex mutex_;
 };

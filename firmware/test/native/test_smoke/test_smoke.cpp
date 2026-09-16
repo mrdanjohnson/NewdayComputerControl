@@ -81,7 +81,7 @@ TEST(Smoke, ModeALifecycleTerminatesUnconfirmed) {
 TEST(Smoke, CapabilitiesModeAHonesty) {
     mcco::Identity id{"ProPresenter Mac", "mac-a1b2c3", "", "", "a1b2c3d4e5f6"};
     JsonDocument doc;
-    mcco::build_capabilities_mode_a(doc, id);
+    mcco::build_capabilities_mode_a(doc, id, {});
     EXPECT_EQ(std::string(doc["mode"] | "?"), "A");
     EXPECT_EQ(std::string(doc["capability_level"] | "?"), "L1");
     JsonObject cmds = doc["commands"];

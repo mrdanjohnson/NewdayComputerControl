@@ -209,6 +209,7 @@
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Udp.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/cbuf.h \
  src/esp_clock.h lib/maccontrol_core/mc_clock.h src/hid_keyboard.h \
- src/nvs_config.h \
+ lib/maccontrol_core/mc_macro.h lib/maccontrol_core/mc_error.h \
+ lib/maccontrol_core/mc_random.h src/nvs_config.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
  lib/maccontrol_core/mc_auth.h

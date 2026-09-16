@@ -3,6 +3,7 @@
 #include "esp_clock.h"
 #include "hid_keyboard.h"
 #include "mc_clock.h"
+#include "mc_macro.h"
 #include "nvs_config.h"
 
 void StatusCache::begin(AppContext* ctx) {
@@ -60,6 +61,19 @@ void StatusCache::onIdentityChanged() {
     ++cache_epoch_;
 }
 
+void StatusCache::onMacrosChanged() {
+    std::vector<std::string> ids;
+    {
+        Guard g(ctx_->engine_mutex);
+        if (ctx_->macros) {
+            for (const mcco::Macro* m : ctx_->macros->list()) ids.push_back(m->macro_id);
+        }
+    }
+    Guard g(mutex_);
+    macro_ids_ = std::move(ids);
+    ++cache_epoch_;
+}
+
 void StatusCache::buildStatus(JsonDocument& doc) const {
     mcco::Identity id;
     bool usb, net;
@@ -84,5 +98,5 @@ void StatusCache::buildCapabilities(JsonDocument& doc) const {
         Guard g(mutex_);
         id = identity_;
     }
-    mcco::build_capabilities_mode_a(doc, id);
+    mcco::build_capabilities_mode_a(doc, id, macro_ids_);
 }

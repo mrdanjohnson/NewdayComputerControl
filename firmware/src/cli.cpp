@@ -15,6 +15,7 @@
 #include "mdns_service.h"
 #include "nvs_config.h"
 #include "status_cache.h"
+#include "web_ui.h"
 #include "wifi_mgr.h"
 
 namespace {
@@ -77,6 +78,8 @@ void Cli::cmdHelp() {
         "  wifi set <ssid> <pass>\n"
         "  wifi status\n"
         "  ntp set <server>\n"
+        "  admin set <password>   (min 10 chars; never echoed to the log)\n"
+        "  admin status\n"
         "  status\n"
         "  reboot");
 }
@@ -96,6 +99,8 @@ void Cli::handleLine(const std::string& line) {
         cmdWifi(args);
     } else if (cmd == "ntp") {
         cmdNtp(args);
+    } else if (cmd == "admin") {
+        cmdAdmin(args);
     } else if (cmd == "status") {
         cmdStatus();
     } else if (cmd == "reboot") {
@@ -279,6 +284,36 @@ void Cli::cmdStatus() {
     }
     Serial.printf("sntp synced: %s\n", static_cast<EspClock*>(ctx_->clock)->synced() ? "yes" : "no");
     Serial.printf("log entries: %u\n", (unsigned)ctx_->log->count());
+}
+
+void Cli::cmdAdmin(const std::vector<std::string>& args) {
+    if (args.empty()) {
+        Serial.println("usage: admin set <password> | admin status");
+        return;
+    }
+    if (args[0] == "set" && args.size() >= 2) {
+        std::string password;
+        for (size_t i = 1; i < args.size(); i++) {
+            if (i > 1) password += " ";
+            password += args[i];
+        }
+        std::string err;
+        if (!ctx_->web_ui->setPassword(password.c_str(), err)) {
+            Serial.printf("admin password NOT set: %s\n", err.c_str());
+            return;
+        }
+        // The password itself is never printed or logged (spec 13.1.1).
+        ctx_->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Info, "admin_password_set",
+                         nullptr, nullptr, nullptr, nullptr);
+        Serial.println("admin password set");
+        return;
+    }
+    if (args[0] == "status") {
+        Serial.printf("admin password: %s\n",
+                      ctx_->web_ui->passwordSet() ? "set" : "not set");
+        return;
+    }
+    Serial.println("usage: admin set <password> | admin status");
 }
 
 void Cli::cmdReboot() {

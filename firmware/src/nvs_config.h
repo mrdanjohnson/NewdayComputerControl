@@ -52,6 +52,19 @@ public:
     // device_name "MacControl".
     static mcco::Identity factoryIdentity();
 
+    // ---- Phase 2 records (spec ch. 10, 13.1.1) ------------------------------
+    // Macro store and trigger bindings persist as JSON arrays of opaque
+    // definition lines through the same double-slot CRC machinery.
+    bool persistMacroLines(const std::vector<std::string>& lines);
+    bool loadMacroLines(std::vector<std::string>& out); // false: no record yet
+    bool persistTriggerLines(const std::vector<std::string>& lines);
+    bool loadTriggerLines(std::vector<std::string>& out);
+
+    // Admin password (spec 13.1.1): PBKDF2-HMAC-SHA256(10000, 32B) with a
+    // 16-byte salt, both base64url. Only the digests ever touch flash.
+    bool saveAdminPassword(const std::string& salt_b64, const std::string& hash_b64);
+    bool loadAdminPassword(std::string& salt_b64, std::string& hash_b64); // false: unset
+
 private:
     bool readRecord(const char* key, std::string& payload);
     bool writeRecord(const char* key, const std::string& payload);

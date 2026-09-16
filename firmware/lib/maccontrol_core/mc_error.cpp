@@ -10,6 +10,9 @@ int error_http_status(ErrCode c) {
         case ErrCode::NotFound: return 404;
         case ErrCode::Conflict: return 409;
         case ErrCode::AgentNotPaired: return 409;
+        case ErrCode::MacroInvalidStep: return 400;
+        case ErrCode::MacroQueueFull: return 409;
+        case ErrCode::StoreCorrupt: return 409;
         case ErrCode::RateLimited: return 429;
         case ErrCode::InternalError: return 500;
         case ErrCode::LedgerUnavailable: return 503;
@@ -26,6 +29,9 @@ const char* error_code_string(ErrCode c) {
         case ErrCode::NotFound: return "not_found";
         case ErrCode::Conflict: return "conflict";
         case ErrCode::AgentNotPaired: return "agent_not_paired";
+        case ErrCode::MacroInvalidStep: return "macro_invalid_step";
+        case ErrCode::MacroQueueFull: return "macro_queue_full";
+        case ErrCode::StoreCorrupt: return "store_corrupt";
         case ErrCode::RateLimited: return "rate_limited";
         case ErrCode::InternalError: return "internal_error";
         case ErrCode::LedgerUnavailable: return "ledger_unavailable";
@@ -42,6 +48,9 @@ const char* default_error_message(ErrCode c) {
         case ErrCode::NotFound: return "Unknown path, command_id, or version";
         case ErrCode::Conflict: return "Idempotency key replay with divergent body";
         case ErrCode::AgentNotPaired: return "Agent-dependent command or endpoint requested with no active pairing";
+        case ErrCode::MacroInvalidStep: return "Invalid macro definition (step outside enums, forbidden expected_event)";
+        case ErrCode::MacroQueueFull: return "Macro queue at capacity";
+        case ErrCode::StoreCorrupt: return "Macro store CRC failure";
         case ErrCode::RateLimited: return "Rate limit exceeded";
         case ErrCode::InternalError: return "Internal error";
         case ErrCode::LedgerUnavailable: return "Ledger write failed; nothing dispatched";

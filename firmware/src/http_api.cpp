@@ -19,7 +19,13 @@
 #include "mc_log.h"
 #include "mc_rate_limit.h"
 #include "mc_sha256.h"
+#include "mdns_service.h"
+#include "nvs_config.h"
 #include "status_cache.h"
+#include "trigger_store.h"
+#include "macro_runner.h"
+#include "mc_macro.h"
+#include "web_ui.h"
 #include "wifi_mgr.h"
 
 namespace {
@@ -34,6 +40,7 @@ struct Request {
     std::string query;
     std::string body;
     std::string auth;           // raw Authorization header value
+    std::string cookie;         // raw Cookie header value
     std::string idempotency_key; // Idempotency-Key header value
 };
 
@@ -105,6 +112,26 @@ bool queryParam(const std::string& query, const char* name, std::string& out) {
         pos = amp + 1;
     }
     return false;
+}
+
+// Cookie header lookup ("a=b; c=d"): returns the decoded value or "".
+std::string cookieValue(const std::string& cookie, const char* name) {
+    size_t pos = 0;
+    const std::string prefix = std::string(name) + "=";
+    while (pos <= cookie.size()) {
+        size_t semi = cookie.find(';', pos);
+        std::string pair = trim(cookie.substr(
+            pos, semi == std::string::npos ? std::string::npos : semi - pos));
+        if (pair.compare(0, prefix.size(), prefix) == 0) {
+            std::string v = trim(pair.substr(prefix.size()));
+            // Strip surrounding quotes if present.
+            if (v.size() >= 2 && v.front() == '"' && v.back() == '"') v = v.substr(1, v.size() - 2);
+            return v;
+        }
+        if (semi == std::string::npos) break;
+        pos = semi + 1;
+    }
+    return "";
 }
 
 // ---- Failed-auth lockout (spec 13.1.1): 10 consecutive failures from one
@@ -215,6 +242,8 @@ void HttpApi::handleClient(WiFiClient& client) {
                     content_length = (uint32_t)strtoul(value.c_str(), nullptr, 10);
                 } else if (name == "authorization") {
                     req.auth = value;
+                } else if (name == "cookie") {
+                    req.cookie = value;
                 } else if (name == "idempotency-key") {
                     req.idempotency_key = value;
                 }
@@ -276,10 +305,87 @@ void HttpApi::handleClient(WiFiClient& client) {
         serializeJson(doc, body);
         sendRaw(status, body);
     };
+    auto sendHtml = [&](int status, const char* html) {
+        std::string hdrs = "HTTP/1.1 " + std::to_string(status) + " " + reasonPhrase(status) +
+                           "\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " +
+                           std::to_string(strlen(html)) +
+                           "\r\nConnection: close\r\nX-Request-Id: " + request_id + "\r\n\r\n";
+        client.write(hdrs.data(), hdrs.size());
+        client.write(html, strlen(html));
+        client.flush();
+    };
+
+    const std::string ip = client.remoteIP().toString().c_str();
+
+    // ---- Web UI document + session endpoints (spec ch. 14). GET / is a
+    // document, never 401: the login form lives inside the page.
+    if (req.method == "GET" && (req.path == "/" || req.path == "/ui")) {
+        if (ctx->web_ui) sendHtml(200, ctx->web_ui->pageHtml());
+        else sendError(mcco::ErrCode::InternalError);
+        return;
+    }
+    if (req.method == "GET" && req.path == "/ui/session") {
+        const std::string tok = cookieValue(req.cookie, "mc_session");
+        const bool authed = ctx->web_ui && ctx->web_ui->validateSession(tok);
+        JsonDocument doc;
+        doc["authenticated"] = authed;
+        doc["password_set"] = ctx->web_ui ? ctx->web_ui->passwordSet() : false;
+        sendJson(200, doc);
+        return;
+    }
+    if (req.method == "POST" && req.path == "/ui/login") {
+        JsonDocument doc;
+        if (deserializeJson(doc, req.body) || !doc.is<JsonObject>() ||
+            !doc["password"].is<const char*>()) {
+            sendError(mcco::ErrCode::BadRequest);
+            return;
+        }
+        std::string token;
+        const WebUi::LoginResult lr =
+            ctx->web_ui->login(doc["password"].as<const char*>(), ip, token);
+        if (lr != WebUi::LoginResult::Ok) {
+            sendError(mcco::ErrCode::Unauthorized,
+                      lr == WebUi::LoginResult::LockedOut
+                          ? "Locked out after failed logins; try again in 60 seconds"
+                          : nullptr);
+            return;
+        }
+        std::string hdrs =
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n"
+            "Set-Cookie: mc_session=" +
+            token +
+            "; Path=/; HttpOnly; Max-Age=28800\r\nConnection: close\r\nX-Request-Id: " +
+            request_id + "\r\n\r\n";
+        client.write(hdrs.data(), hdrs.size());
+        client.write("{\"ok\":true}", 11);
+        client.flush();
+        return;
+    }
+    if (req.method == "POST" && req.path == "/ui/logout") {
+        const std::string tok = cookieValue(req.cookie, "mc_session");
+        if (ctx->web_ui) ctx->web_ui->logout(tok);
+        const char* body = "{\"ok\":true}";
+        std::string hdrs =
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n"
+            "Set-Cookie: mc_session=; Path=/; HttpOnly; Max-Age=0\r\nConnection: close\r\n"
+            "X-Request-Id: " +
+            request_id + "\r\n\r\n";
+        client.write(hdrs.data(), hdrs.size());
+        client.write(body, 11);
+        client.flush();
+        return;
+    }
 
     // ---- Agent surface: no pairing exists in Phase 1 (spec 4.3.1).
     if (req.path.compare(0, 10, "/agent/v1/") == 0) {
         sendError(mcco::ErrCode::Unauthorized);
+        return;
+    }
+
+    // ---- Unversioned or unknown top-level paths: 404 before authentication
+    // (spec 4.1.1 — the surface is versioned; / and /ui are the documents).
+    if (req.path.compare(0, 8, "/api/v1/") != 0) {
+        sendError(mcco::ErrCode::NotFound);
         return;
     }
 
@@ -290,8 +396,21 @@ void HttpApi::handleClient(WiFiClient& client) {
     }
 
     // ---- Authentication + lockout + rate limit.
-    const std::string ip = client.remoteIP().toString().c_str();
+    // A valid mc_session cookie is treated as the ADMIN role for /api/v1/*
+    // calls made by the Web UI (spec ch. 14: the Web UI is bound to ADMIN).
+    // Session-authenticated calls bypass the per-key rate limiter and key
+    // last_used_at attribution (both are keyed to API keys, spec 13.1.1).
+    mcco::Principal principal;
+    bool session_auth = false;
     {
+        const std::string tok = cookieValue(req.cookie, "mc_session");
+        if (!tok.empty() && ctx->web_ui && ctx->web_ui->validateSession(tok)) {
+            principal.key_id = "webui";
+            principal.role = mcco::Role::Admin;
+            session_auth = true;
+        }
+    }
+    if (!session_auth) {
         Guard g(g_auth_track_mutex);
         AuthTrack& t = trackFor(ip.c_str());
         if (t.lockout_until_ms != 0 && ctx->clock->millis() < t.lockout_until_ms) {
@@ -303,49 +422,54 @@ void HttpApi::handleClient(WiFiClient& client) {
             t.consecutive_fails = 0;
         }
     }
-    std::string raw_key;
-    const std::string bearer = "Bearer ";
-    if (req.auth.compare(0, bearer.size(), bearer) == 0) raw_key = trim(req.auth.substr(bearer.size()));
+    if (!session_auth) {
+        std::string raw_key;
+        const std::string bearer = "Bearer ";
+        if (req.auth.compare(0, bearer.size(), bearer) == 0)
+            raw_key = trim(req.auth.substr(bearer.size()));
 
-    mcco::Principal principal;
-    mcco::AuthResult auth = ctx->keys->authenticate(raw_key, ctx->clock->epoch_seconds(), principal);
-    if (auth != mcco::AuthResult::Ok) {
-        Guard g(g_auth_track_mutex);
-        AuthTrack& t = trackFor(ip.c_str());
-        ++t.consecutive_fails;
-        if (t.consecutive_fails >= 10) {
-            t.lockout_until_ms = ctx->clock->millis() + 60000;
-            t.consecutive_fails = 0;
-            ctx->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Warn, "auth_lockout",
-                            nullptr, request_id.c_str(), (std::string("ip:") + ip).c_str(),
-                            nullptr);
-        } else {
-            ctx->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Warn, "auth_failed",
-                            nullptr, request_id.c_str(), (std::string("ip:") + ip).c_str(),
-                            nullptr);
+        mcco::AuthResult auth =
+            ctx->keys->authenticate(raw_key, ctx->clock->epoch_seconds(), principal);
+        if (auth != mcco::AuthResult::Ok) {
+            Guard g(g_auth_track_mutex);
+            AuthTrack& t = trackFor(ip.c_str());
+            ++t.consecutive_fails;
+            if (t.consecutive_fails >= 10) {
+                t.lockout_until_ms = ctx->clock->millis() + 60000;
+                t.consecutive_fails = 0;
+                ctx->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Warn, "auth_lockout",
+                                nullptr, request_id.c_str(), (std::string("ip:") + ip).c_str(),
+                                nullptr);
+            } else {
+                ctx->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Warn, "auth_failed",
+                                nullptr, request_id.c_str(), (std::string("ip:") + ip).c_str(),
+                                nullptr);
+            }
+            if (auth == mcco::AuthResult::Revoked) {
+                sendError(mcco::ErrCode::Forbidden);
+            } else {
+                sendError(mcco::ErrCode::Unauthorized); // missing/invalid or expired
+            }
+            return;
         }
-        if (auth == mcco::AuthResult::Revoked) {
-            sendError(mcco::ErrCode::Forbidden);
-        } else {
-            sendError(mcco::ErrCode::Unauthorized); // missing/invalid or expired
-        }
-        return;
     }
     {
         Guard g(g_auth_track_mutex);
         AuthTrack& t = trackFor(ip.c_str());
         t.consecutive_fails = 0;
     }
-    if (!ctx->limiter->allow(principal.key_id, principal.role)) {
-        sendError(mcco::ErrCode::RateLimited);
-        return;
+    if (!session_auth) {
+        if (!ctx->limiter->allow(principal.key_id, principal.role)) {
+            sendError(mcco::ErrCode::RateLimited);
+            return;
+        }
+
+        // Mark key use (attribution, spec 13.1.1). Persisted lazily by main loop.
+        ctx->keys->touch(principal.key_id, ctx->clock->epoch_seconds());
+        ctx->keys_dirty = true;
     }
 
-    // Mark key use (attribution, spec 13.1.1). Persisted lazily by main loop.
-    ctx->keys->touch(principal.key_id, ctx->clock->epoch_seconds());
-    ctx->keys_dirty = true;
-
-    const std::string actor = "apikey:" + principal.key_id;
+    const std::string actor = session_auth ? "webui" : "apikey:" + principal.key_id;
     auto roleCheck = [&](mcco::Role need) -> bool {
         if (!mcco::role_at_least(principal.role, need)) {
             sendError(mcco::ErrCode::Forbidden);
@@ -610,6 +734,278 @@ void HttpApi::handleClient(WiFiClient& client) {
         resp["record_url"] = "/api/v1/commands/" + out.record.command_id;
         sendJson(out.http_status, resp);
         if (out.dispatch_pending) ctx->dispatcher->enqueue(out.record.command_id);
+        return;
+    }
+
+    // ---- Macros (spec 10.1, 10.3.1, 12.1.1) ----
+    if (req.path == "/api/v1/macros" || req.path.compare(0, 15, "/api/v1/macros/") == 0) {
+        const std::string rest = (req.path.size() > 15) ? req.path.substr(15) : "";
+        // rest is "{id}" or "{id}/execute"; ids never contain '/'.
+        const size_t slash = rest.find('/');
+        const std::string macro_id = (slash == std::string::npos) ? rest : rest.substr(0, slash);
+        const bool is_execute = (slash != std::string::npos && rest.substr(slash) == "/execute");
+
+        if (rest.empty()) {
+            if (req.method == "GET") {
+                if (!roleCheck(mcco::Role::Read)) return;
+                std::string body = "{\"macros\":[";
+                bool first = true;
+                {
+                    Guard g(ctx->engine_mutex);
+                    for (const mcco::Macro* m : ctx->macros->list()) {
+                        if (!first) body += ",";
+                        first = false;
+                        body += mcco::macro_to_json(*m);
+                    }
+                }
+                body += "]}";
+                sendRaw(200, body);
+                return;
+            }
+            if (req.method == "POST") {
+                if (!roleCheck(mcco::Role::Admin)) return;
+                if (ctx->store_corrupt.load()) {
+                    sendError(mcco::ErrCode::StoreCorrupt); // spec 15.1
+                    return;
+                }
+                mcco::Macro def, created;
+                mcco::MacroError merr = mcco::MacroError::Ok;
+                if (!mcco::macro_from_json(req.body, def, merr)) {
+                    sendError(mcco::macro_error_code(merr), mcco::macro_error_detail(merr));
+                    return;
+                }
+                {
+                    Guard g(ctx->engine_mutex);
+                    if (!ctx->macros->add(def, created, merr, *ctx->rng)) {
+                        sendError(mcco::macro_error_code(merr), mcco::macro_error_detail(merr));
+                        return;
+                    }
+                }
+                ctx->macros_dirty = true;
+                ctx->status_cache->onMacrosChanged();
+                ctx->log->write(mcco::LogCategory::Config, mcco::LogLevel::Info, "macro_created",
+                                nullptr, request_id.c_str(), actor.c_str(),
+                                (std::string("{\"macro_id\":\"") + created.macro_id + "\"}")
+                                    .c_str());
+                sendRaw(201, mcco::macro_to_json(created));
+                return;
+            }
+            sendError(mcco::ErrCode::NotFound);
+            return;
+        }
+
+        if (is_execute) {
+            if (req.method != "POST") {
+                sendError(mcco::ErrCode::NotFound);
+                return;
+            }
+            if (!roleCheck(mcco::Role::Control)) return; // http_button, spec 10.2.1
+            MacroExecOutcome out = submit_macro_execute(ctx, macro_id, actor);
+            if (!out.ok) {
+                sendError(out.error);
+                return;
+            }
+            JsonDocument resp;
+            resp["command_id"] = out.submit.record.command_id;
+            resp["state"] = mcco::command_state_to_string(out.submit.record.state);
+            resp["deadline_at"] = mcco::iso8601_format(out.submit.record.deadline_at);
+            resp["record_url"] = "/api/v1/commands/" + out.submit.record.command_id;
+            sendJson(202, resp);
+            return;
+        }
+
+        if (req.method == "PUT") {
+            if (!roleCheck(mcco::Role::Admin)) return;
+            if (ctx->store_corrupt.load()) {
+                sendError(mcco::ErrCode::StoreCorrupt);
+                return;
+            }
+            mcco::Macro def;
+            mcco::MacroError merr = mcco::MacroError::Ok;
+            if (!mcco::macro_from_json(req.body, def, merr)) {
+                sendError(mcco::macro_error_code(merr), mcco::macro_error_detail(merr));
+                return;
+            }
+            {
+                Guard g(ctx->engine_mutex);
+                if (!ctx->macros->update(macro_id, def, merr)) {
+                    sendError(mcco::macro_error_code(merr), mcco::macro_error_detail(merr));
+                    return;
+                }
+            }
+            ctx->macros_dirty = true;
+            ctx->status_cache->onMacrosChanged();
+            std::string body;
+            {
+                Guard g(ctx->engine_mutex);
+                const mcco::Macro* m = ctx->macros->get(macro_id);
+                body = m ? mcco::macro_to_json(*m) : "{}";
+            }
+            ctx->log->write(mcco::LogCategory::Config, mcco::LogLevel::Info, "macro_updated",
+                            nullptr, request_id.c_str(), actor.c_str(),
+                            (std::string("{\"macro_id\":\"") + macro_id + "\"}").c_str());
+            sendRaw(200, body);
+            return;
+        }
+        if (req.method == "DELETE") {
+            if (!roleCheck(mcco::Role::Admin)) return;
+            if (ctx->store_corrupt.load()) {
+                sendError(mcco::ErrCode::StoreCorrupt);
+                return;
+            }
+            bool removed;
+            {
+                Guard g(ctx->engine_mutex);
+                removed = ctx->macros->remove(macro_id);
+            }
+            if (!removed) {
+                sendError(mcco::ErrCode::NotFound);
+                return;
+            }
+            // Spec 10.2.1: bindings to the deleted macro are auto-disabled
+            // (never executed against a stale revision) and logged.
+            for (const std::string& tid : ctx->triggers->onMacroDeleted(macro_id)) {
+                ctx->triggers_dirty = true;
+                ctx->log->write(mcco::LogCategory::Config, mcco::LogLevel::Warn,
+                                "trigger_auto_disabled", nullptr, request_id.c_str(),
+                                actor.c_str(),
+                                (std::string("{\"trigger_id\":\"") + tid +
+                                 "\",\"macro_id\":\"" + macro_id + "\"}")
+                                    .c_str());
+            }
+            ctx->macros_dirty = true;
+            ctx->status_cache->onMacrosChanged();
+            ctx->log->write(mcco::LogCategory::Config, mcco::LogLevel::Info, "macro_deleted",
+                            nullptr, request_id.c_str(), actor.c_str(),
+                            (std::string("{\"macro_id\":\"") + macro_id + "\"}").c_str());
+            sendRaw(204, "");
+            return;
+        }
+        sendError(mcco::ErrCode::NotFound);
+        return;
+    }
+
+    // ---- Triggers (spec 10.2.1). NOT in the spec ch.12 inventory; added as
+    // an ADMIN-gated surface because the Web UI owns trigger bindings
+    // (spec ch.14 matrix). Phase 3 reconciles with /openapi.json.
+    if (req.path == "/api/v1/triggers" || req.path.compare(0, 17, "/api/v1/triggers/") == 0) {
+        const std::string rest = (req.path.size() > 17) ? req.path.substr(17) : "";
+        if (rest.empty()) {
+            if (req.method == "GET") {
+                if (!roleCheck(mcco::Role::Read)) return;
+                std::string body = "{\"triggers\":[";
+                bool first = true;
+                for (const Trigger* t : ctx->triggers->list()) {
+                    if (!first) body += ",";
+                    first = false;
+                    body += trigger_to_json_pub(*t);
+                }
+                body += "]}";
+                sendRaw(200, body);
+                return;
+            }
+            if (req.method == "POST") {
+                if (!roleCheck(mcco::Role::Admin)) return;
+                Trigger created;
+                mcco::ErrCode terr = mcco::ErrCode::InternalError;
+                if (!ctx->triggers->add(req.body, created, terr)) {
+                    sendError(terr);
+                    return;
+                }
+                ctx->triggers_dirty = true;
+                ctx->log->write(mcco::LogCategory::Config, mcco::LogLevel::Info, "trigger_created",
+                                nullptr, request_id.c_str(), actor.c_str(),
+                                (std::string("{\"trigger_id\":\"") + created.trigger_id + "\"}")
+                                    .c_str());
+                sendRaw(201, trigger_to_json_pub(created));
+                return;
+            }
+            sendError(mcco::ErrCode::NotFound);
+            return;
+        }
+        if (rest.find('/') != std::string::npos) {
+            sendError(mcco::ErrCode::NotFound);
+            return;
+        }
+        if (req.method == "PUT") {
+            if (!roleCheck(mcco::Role::Admin)) return;
+            Trigger updated;
+            mcco::ErrCode terr = mcco::ErrCode::InternalError;
+            if (!ctx->triggers->update(rest, req.body, updated, terr)) {
+                sendError(terr);
+                return;
+            }
+            ctx->triggers_dirty = true;
+            ctx->log->write(mcco::LogCategory::Config, mcco::LogLevel::Info, "trigger_updated",
+                            nullptr, request_id.c_str(), actor.c_str(),
+                            (std::string("{\"trigger_id\":\"") + rest + "\"}").c_str());
+            sendRaw(200, trigger_to_json_pub(updated));
+            return;
+        }
+        if (req.method == "DELETE") {
+            if (!roleCheck(mcco::Role::Admin)) return;
+            if (!ctx->triggers->remove(rest)) {
+                sendError(mcco::ErrCode::NotFound);
+                return;
+            }
+            ctx->triggers_dirty = true;
+            ctx->log->write(mcco::LogCategory::Config, mcco::LogLevel::Info, "trigger_deleted",
+                            nullptr, request_id.c_str(), actor.c_str(),
+                            (std::string("{\"trigger_id\":\"") + rest + "\"}").c_str());
+            sendRaw(204, "");
+            return;
+        }
+        sendError(mcco::ErrCode::NotFound);
+        return;
+    }
+
+    // ---- Device identity (spec ch.14 matrix: the ESP32 Web UI owns identity).
+    // No identity REST endpoint exists in the spec ch.12 inventory; this
+    // ADMIN-gated surface backs the Device page (Phase 3 reconciles).
+    if (req.method == "POST" && req.path == "/api/v1/device/identity") {
+        if (!roleCheck(mcco::Role::Admin)) return;
+        JsonDocument doc;
+        if (deserializeJson(doc, req.body) || !doc.is<JsonObject>()) {
+            sendError(mcco::ErrCode::BadRequest);
+            return;
+        }
+        for (JsonPairConst kv : doc.as<JsonObjectConst>()) {
+            const char* k = kv.key().c_str();
+            if (strcmp(k, "device_name") != 0 && strcmp(k, "hostname") != 0 &&
+                strcmp(k, "location") != 0 && strcmp(k, "description") != 0) {
+                sendError(mcco::ErrCode::BadRequest);
+                return;
+            }
+        }
+        mcco::Identity id = ctx->config->identity();
+        const std::string old_hostname = id.hostname;
+        if (doc["device_name"].is<const char*>()) id.device_name = doc["device_name"].as<const char*>();
+        if (doc["hostname"].is<const char*>()) {
+            const std::string h = doc["hostname"].as<const char*>();
+            if (!mcco::hostname_valid(h)) {
+                sendError(mcco::ErrCode::BadRequest, "invalid hostname (1-57 chars [a-z0-9-])");
+                return;
+            }
+            id.hostname = h;
+        }
+        if (doc["location"].is<const char*>()) id.location = doc["location"].as<const char*>();
+        if (doc["description"].is<const char*>())
+            id.description = doc["description"].as<const char*>();
+        if (!ctx->config->saveIdentity(id)) {
+            sendError(mcco::ErrCode::InternalError);
+            return;
+        }
+        ctx->status_cache->onIdentityChanged();
+        if (id.hostname != old_hostname) ctx->mdns->reannounce(id); // spec 3.1.1
+        ctx->log->write(mcco::LogCategory::Config, mcco::LogLevel::Info, "identity_updated",
+                        nullptr, request_id.c_str(), actor.c_str(), nullptr);
+        JsonDocument resp;
+        resp["device_name"] = id.device_name;
+        resp["hostname"] = id.hostname;
+        resp["location"] = id.location;
+        resp["description"] = id.description;
+        resp["device_id"] = id.device_id;
+        sendJson(200, resp);
         return;
     }
 

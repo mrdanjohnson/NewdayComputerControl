@@ -21,6 +21,20 @@ public:
     // second failure (the engine then maps the command to failed/dispatch_error).
     bool send_chord(mcco::CommandType type);
 
+    // ---- Macro interpreter primitives (spec 10.1.1/10.3.1) ------------------
+    // Named USB HID usages come from the core table (mcco::hid_key_code).
+    // All return false immediately when USB is not mounted; no retry polling
+    // (the macro runner handles usb_disconnected aborts itself).
+    bool keyDown(uint8_t code);  // press one usage (key or modifier 0xE0..0xE7)
+    bool keyUp(uint8_t code);
+    bool allKeysUp();            // release every held key + modifier (spec 10.3.1)
+    // Emits each byte as press+release at inter_key_ms; ASCII subset only
+    // (letters/digits/space/enter and common punctuation), other bytes skipped.
+    bool typeText(const char* s, size_t len, uint32_t inter_key_ms);
+    // Maps a core modifier name {ctrl,shift,alt,cmd} to its left-side HID
+    // modifier usage (0xE0..0xE3); 0 if unknown.
+    static uint8_t modifierUsage(const char* name);
+
 private:
     static bool wait_mounted();
     static bool send_once(mcco::CommandType type);

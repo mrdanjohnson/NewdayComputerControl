@@ -424,6 +424,59 @@ TEST(Engine, ListFilterByStateTypeAndSince) {
     EXPECT_EQ(all[2]->command_id, wake.record.command_id);
 }
 
+TEST(Engine, MacroExecuteResolverWiredFound) {
+    EngineFixture fx;
+    fx.engine.set_macro_resolver([](const std::string& macro_id) {
+        mcco::CommandEngine::MacroResolution r;
+        if (macro_id == "mac_3F81") {
+            r.found = true;
+            r.timeout_ms = 10000;
+        }
+        return r;
+    });
+    mcco::Submission sub;
+    sub.type = mcco::CommandType::MacroExecute;
+    sub.parameters_json = R"({"macro_id":"mac_3F81"})";
+    sub.requested_by = "apikey:key-01";
+    sub.body_hash = "h";
+
+    auto out = fx.engine.submit(sub);
+    ASSERT_TRUE(out.ok);
+    EXPECT_EQ(out.http_status, 202);
+    EXPECT_TRUE(out.dispatch_pending);
+    EXPECT_EQ(fx.ledger.command_count(), 1);
+
+    // Dispatch completes later; the dispatcher passes the authoritative
+    // per-macro deadline (timeout_ms/1000 + 5, spec 10.3.1) as an override.
+    fx.clock.advance_seconds(2);
+    const uint64_t t1 = fx.clock.epoch;
+    ASSERT_TRUE(fx.engine.complete_dispatch(out.record.command_id, true, 15));
+
+    const mcco::CommandRecord* rec = fx.engine.get(out.record.command_id);
+    ASSERT_NE(rec, nullptr);
+    EXPECT_EQ(rec->state, mcco::CommandState::Unconfirmed);
+    EXPECT_EQ(rec->result, "hid_only");
+    EXPECT_EQ(rec->dispatched_at, t1);
+    EXPECT_EQ(rec->deadline_at, t1 + 15); // override, not the per-type default
+}
+
+TEST(Engine, MacroExecuteResolverWiredNotFound) {
+    EngineFixture fx;
+    fx.engine.set_macro_resolver([](const std::string&) {
+        return mcco::CommandEngine::MacroResolution{};
+    });
+    mcco::Submission sub;
+    sub.type = mcco::CommandType::MacroExecute;
+    sub.parameters_json = R"({"macro_id":"mac_0000"})";
+    sub.requested_by = "apikey:key-01";
+    sub.body_hash = "h";
+
+    auto out = fx.engine.submit(sub);
+    EXPECT_FALSE(out.ok);
+    EXPECT_EQ(out.error, mcco::ErrCode::NotFound);
+    EXPECT_EQ(fx.ledger.command_count(), 0); // pre-ledger reject
+}
+
 TEST(Engine, SubmitBeforeInitReturnsLedgerUnavailable) {
     FakeClock clock;
     FakeRandom rng;

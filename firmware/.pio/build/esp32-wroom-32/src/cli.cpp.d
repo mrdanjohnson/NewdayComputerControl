@@ -208,4 +208,4 @@
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
  src/status_cache.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/freertos/include/freertos/timers.h \
- src/wifi_mgr.h
+ src/web_ui.h src/wifi_mgr.h

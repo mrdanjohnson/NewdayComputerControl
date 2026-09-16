@@ -238,6 +238,67 @@ bool ConfigStore::hydrateKeys(mcco::KeyStore& ks) {
     return true;
 }
 
+bool ConfigStore::persistMacroLines(const std::vector<std::string>& lines) {
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    for (const std::string& line : lines) arr.add(line);
+    std::string out;
+    serializeJson(doc, out);
+    return writeRecord("macros", out);
+}
+
+bool ConfigStore::loadMacroLines(std::vector<std::string>& out) {
+    std::string tmp;
+    if (!readRecord("macros", tmp)) return false;
+    JsonDocument doc;
+    if (deserializeJson(doc, tmp) || !doc.is<JsonArray>()) return false;
+    out.clear();
+    for (JsonVariantConst v : doc.as<JsonArrayConst>()) {
+        if (v.is<const char*>()) out.emplace_back(v.as<const char*>());
+    }
+    return true;
+}
+
+bool ConfigStore::persistTriggerLines(const std::vector<std::string>& lines) {
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    for (const std::string& line : lines) arr.add(line);
+    std::string out;
+    serializeJson(doc, out);
+    return writeRecord("triggers", out);
+}
+
+bool ConfigStore::loadTriggerLines(std::vector<std::string>& out) {
+    std::string tmp;
+    if (!readRecord("triggers", tmp)) return false;
+    JsonDocument doc;
+    if (deserializeJson(doc, tmp) || !doc.is<JsonArray>()) return false;
+    out.clear();
+    for (JsonVariantConst v : doc.as<JsonArrayConst>()) {
+        if (v.is<const char*>()) out.emplace_back(v.as<const char*>());
+    }
+    return true;
+}
+
+bool ConfigStore::saveAdminPassword(const std::string& salt_b64, const std::string& hash_b64) {
+    JsonDocument doc;
+    doc["salt"] = salt_b64;
+    doc["hash"] = hash_b64;
+    std::string out;
+    serializeJson(doc, out);
+    return writeRecord("adminpw", out);
+}
+
+bool ConfigStore::loadAdminPassword(std::string& salt_b64, std::string& hash_b64) {
+    std::string tmp;
+    if (!readRecord("adminpw", tmp)) return false;
+    JsonDocument doc;
+    if (deserializeJson(doc, tmp) || !doc.is<JsonObject>()) return false;
+    salt_b64 = doc["salt"] | "";
+    hash_b64 = doc["hash"] | "";
+    return !salt_b64.empty() && !hash_b64.empty();
+}
+
 bool ConfigStore::persistKeys(const mcco::KeyStore& ks) {
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();

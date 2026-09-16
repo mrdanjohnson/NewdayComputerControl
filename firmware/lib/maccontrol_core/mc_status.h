@@ -38,7 +38,9 @@ void build_status_mode_a(JsonDocument& doc, const Identity& id, bool usb_up,
 
 // Mode A capabilities document (spec 12.3.1 + 17.1.1 schema). Exactly the
 // eight closed command types; every entry verified:false; app_launch/app_quit
-// available:false; agent paired:false, connected:false.
-void build_capabilities_mode_a(JsonDocument& doc, const Identity& id);
+// available:false; agent paired:false, connected:false. `macro_ids` lists the
+// executable macros (spec 12.3.1 commands.macro_execute.macro_ids).
+void build_capabilities_mode_a(JsonDocument& doc, const Identity& id,
+                               const std::vector<std::string>& macro_ids);
 
 } // namespace mcco
