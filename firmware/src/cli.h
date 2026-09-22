@@ -13,6 +13,7 @@ public:
     void poll(); // call frequently from the Arduino loop
 
 private:
+    void handleChar(char c);
     void handleLine(const std::string& line);
     void printBanner();
     void cmdHelp();

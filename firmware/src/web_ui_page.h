@@ -39,6 +39,7 @@ button.sm{padding:2px 7px;font-size:12px}
 .badge{display:inline-block;border:1px solid var(--stale);color:var(--stale);border-radius:3px;font-size:10px;padding:0 4px;margin-left:6px;text-transform:uppercase}
 .muted{color:#7b8794;font-size:12px}
 .err{background:#f7eaea;border:1px solid #d8b4b4;color:#7d3232;border-radius:4px;padding:8px 10px;margin:8px 0;white-space:pre-wrap}
+.warn{background:#fdf3e0;border:1px solid #e4c98a;color:#7a5b16;border-radius:4px;padding:8px 10px;margin:8px 0}
 .ok{background:#e9f0e9;border:1px solid #b9d0b9;color:#2f5d2f;border-radius:4px;padding:8px 10px;margin:8px 0}
 input,select,textarea{width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:4px;font-size:13px;font-family:inherit}
 label{display:block;font-size:12px;color:#5c6b7a;margin:8px 0 3px}
@@ -69,9 +70,12 @@ footer{padding:8px 16px;color:#8a97a5;font-size:11px}
   <button data-tab="device" onclick="showTab('device')">Device</button>
   <button data-tab="macros" onclick="showTab('macros')">Macros</button>
   <button data-tab="triggers" onclick="showTab('triggers')">Triggers</button>
+  <button data-tab="security" onclick="showTab('security')">Security</button>
+  <button data-tab="logs" onclick="showTab('logs')">Logs</button>
 </nav>
 <main>
   <div id="err-global"></div>
+  <div class="warn" id="httpwarn" style="display:none"><b>Unencrypted HTTP.</b> API keys and the admin password traverse the LAN in cleartext. Restrict this endpoint to a trusted management network (spec 13.1.1).</div>
 
   <section id="tab-dash">
     <div class="row">
@@ -93,12 +97,12 @@ footer{padding:8px 16px;color:#8a97a5;font-size:11px}
   <section id="tab-device" style="display:none">
     <div class="card"><h2>Device identity</h2><div id="devmsg"></div>
       <div class="row">
-        <div><label>Name</label><input id="id-name"></div>
-        <div><label>Hostname</label><input id="id-hostname"></div>
+        <div><label for="id-name">Name</label><input id="id-name"></div>
+        <div><label for="id-hostname">Hostname</label><input id="id-hostname"></div>
       </div>
       <div class="row">
-        <div><label>Location</label><input id="id-location"></div>
-        <div><label>Description</label><input id="id-description"></div>
+        <div><label for="id-location">Location</label><input id="id-location"></div>
+        <div><label for="id-description">Description</label><input id="id-description"></div>
       </div>
       <div style="margin-top:12px"><button class="act" onclick="saveIdentity()">Save identity</button></div>
       <p class="muted">device_id is immutable. A hostname change re-announces mDNS within 2 s.</p>
@@ -113,8 +117,8 @@ footer{padding:8px 16px;color:#8a97a5;font-size:11px}
     <div class="card" id="macroeditor" style="display:none">
       <h2 id="macroedtitle">Edit macro</h2><div id="macroedmsg"></div>
       <div class="row">
-        <div><label>Name (1-32 chars)</label><input id="m-name"></div>
-        <div><label>Timeout ms (500-60000)</label><input id="m-timeout" type="number" value="10000"></div>
+        <div><label for="m-name">Name (1-32 chars)</label><input id="m-name"></div>
+        <div><label for="m-timeout">Timeout ms (500-60000)</label><input id="m-timeout" type="number" value="10000"></div>
       </div>
       <label>Expected event (optional Mode B verification declaration)</label>
       <div class="row">
@@ -143,21 +147,54 @@ footer{padding:8px 16px;color:#8a97a5;font-size:11px}
     <div class="card" id="triggereditor" style="display:none">
       <h2 id="trigedtitle">Edit trigger</h2><div id="trigedmsg"></div>
       <div class="row">
-        <div><label>Source</label><select id="t-source" onchange="trigSourceChanged()">
+        <div><label for="t-source">Source</label><select id="t-source" onchange="trigSourceChanged()">
           <option value="webui_button">webui_button (Dashboard RUN button)</option>
           <option value="gpio">gpio (physical input)</option></select></div>
-        <div><label>Macro</label><select id="t-macro"></select></div>
-        <div><label>Enabled</label><select id="t-enabled"><option value="true">enabled</option><option value="false">disabled</option></select></div>
+        <div><label for="t-macro">Macro</label><select id="t-macro"></select></div>
+        <div><label for="t-enabled">Enabled</label><select id="t-enabled"><option value="true">enabled</option><option value="false">disabled</option></select></div>
       </div>
       <div class="row" id="t-gpiofields">
-        <div><label>GPIO pin (0-21)</label><input id="t-pin" type="number" min="0" max="21"></div>
-        <div><label>Edge</label><select id="t-edge"><option value="falling">falling</option><option value="rising">rising</option></select></div>
-        <div><label>Debounce ms (10-500)</label><input id="t-debounce" type="number" value="50" min="10" max="500"></div>
+        <div><label for="t-pin">GPIO pin (0-21)</label><input id="t-pin" type="number" min="0" max="21"></div>
+        <div><label for="t-edge">Edge</label><select id="t-edge"><option value="falling">falling</option><option value="rising">rising</option></select></div>
+        <div><label for="t-debounce">Debounce ms (10-500)</label><input id="t-debounce" type="number" value="50" min="10" max="500"></div>
       </div>
       <div style="margin-top:12px">
         <button class="act" onclick="saveTrigger()">Save trigger</button>
         <button class="sec" onclick="cancelTriggerEdit()">Cancel</button>
       </div>
+    </div>
+  </section>
+
+  <section id="tab-security" style="display:none">
+    <div class="card"><h2>API keys</h2><div id="keymsg"></div>
+      <table id="keylist"></table>
+      <div class="row" style="margin-top:10px">
+        <div><label for="k-label">New key label</label><input id="k-label" placeholder="e.g. Companion production"></div>
+        <div><label for="k-role">Role</label><select id="k-role"><option>READ</option><option>CONTROL</option><option>ADMIN</option></select></div>
+      </div>
+      <div style="margin-top:10px"><button class="sec" onclick="createKey()">Create key</button></div>
+      <div id="keyonce"></div>
+      <p class="muted">Raw keys are shown exactly once at creation and are never stored or logged (spec 13.1.1). Keys authenticate controllers with <code>Authorization: Bearer</code>; roles form READ &lt; CONTROL &lt; ADMIN. Key management is available here (Web UI session only), not with API keys.</p>
+    </div>
+    <div class="card"><h2>Admin password</h2><div id="pwmsg"></div>
+      <label for="k-pw">New password (minimum 10 characters)</label>
+      <input type="password" id="k-pw" autocomplete="new-password">
+      <div style="margin-top:10px"><button class="act" onclick="changePassword()">Change password</button></div>
+      <p class="muted">5 consecutive failed logins lock the Web UI for 60 s (spec 13.1.1). Rate limits: READ 60, CONTROL 30, ADMIN 10 requests per minute per key.</p>
+    </div>
+  </section>
+
+  <section id="tab-logs" style="display:none">
+    <div class="card"><h2>Ring-buffer log (spec 15.2)</h2><div id="logmsg"></div>
+      <div class="row">
+        <div><label for="l-cat">Category</label><select id="l-cat"><option value="">(all)</option><option>command</option><option>session</option><option>auth</option><option>config</option><option>ota</option><option>system</option></select></div>
+        <div><label for="l-level">Level</label><select id="l-level"><option value="">(all)</option><option>info</option><option>warn</option><option>error</option></select></div>
+        <div><label for="l-limit">Limit</label><input id="l-limit" type="number" value="100" min="1" max="512"></div>
+        <div style="flex:0;min-width:auto;align-self:flex-end"><button class="sec" onclick="refreshLogs(true)">Apply</button></div>
+      </div>
+      <div id="logdropped" class="muted"></div>
+      <table id="loglist"></table>
+      <div style="margin-top:8px"><button class="sec sm" onclick="logPage(-1)">&larr; prev</button> <button class="sec sm" onclick="logPage(1)">next &rarr;</button> <span class="muted">pages by entry seq</span></div>
     </div>
   </section>
 </main>
@@ -213,10 +250,12 @@ function stateChip(st,result,err){
 }
 function showTab(name){
   document.querySelectorAll('nav button').forEach(function(b){b.classList.toggle('on',b.dataset.tab===name);});
-  ['dash','device','macros','triggers'].forEach(function(t){el('tab-'+t).style.display=(t===name)?'':'none';});
+  ['dash','device','macros','triggers','security','logs'].forEach(function(t){el('tab-'+t).style.display=(t===name)?'':'none';});
   if(name==='dash')refreshDash();
   if(name==='macros')refreshMacros();
   if(name==='triggers')refreshTriggers();
+  if(name==='security')refreshKeys();
+  if(name==='logs')refreshLogs(true);
 }
 
 async function checkSession(){
@@ -240,7 +279,10 @@ function showLogin(passwordSet){
 }
 function showApp(){
   el('login').style.display='none';
-  el('app').style.display='';el('logoutbtn').style.display='';
+  // 'block', not '': the .tabs class carries display:none, so clearing the
+  // inline style would leave the app shell hidden.
+  el('app').style.display='block';
+  el('logoutbtn').style.display='';el('httpwarn').style.display='';
   loadDevice();
   showTab('dash');
 }
@@ -274,10 +316,16 @@ async function refreshDash(){
   }catch(e){el('lastcmd').textContent='No data';}
   try{
     var trgs=await api('/api/v1/triggers');
+    var names={};
+    try{
+      var ms=await api('/api/v1/macros');
+      (ms.macros||[]).forEach(function(m){names[m.macro_id]=m.name||m.macro_id;});
+    }catch(e2){}
     var html='';
     (trgs.triggers||[]).forEach(function(t){
       if(t.source==='webui_button'&&t.enabled){
-        html+='<button class="act" onclick="runMacro(\''+t.macro_id+'\',this)">RUN '+esc(t.macro_id)+'</button> ';
+        var label=names[t.macro_id]||t.macro_id;
+        html+='<button class="act" onclick="runMacro(\''+t.macro_id+'\',this)" title="'+esc(t.macro_id)+'">RUN '+esc(label)+'</button> ';
       }});
     el('runbtns').innerHTML=html||'<span class="muted">No enabled webui_button triggers</span>';
   }catch(e){el('runbtns').innerHTML='<span class="muted">No enabled webui_button triggers</span>';}
@@ -316,20 +364,23 @@ function trackCommand(r,btn){
 
 async function loadDevice(){
   try{
-    var st=await api('/api/v1/status');
-    el('id-name').value=st.device&&st.device.name&&st.device.name.value?st.device.name.value:'';
-    el('id-hostname').value=st.device&&st.device.hostname&&st.device.hostname.value?st.device.hostname.value:'';
-  }catch(e){}
-  try{
-    var caps=await api('/api/v1/capabilities');
-    el('id-location').value='';el('id-description').value='';
+    var id=await api('/api/v1/device/identity');
+    el('id-name').value=id.device_name||'';
+    el('id-hostname').value=id.hostname||'';
+    el('id-location').value=id.location||'';
+    el('id-description').value=id.description||'';
   }catch(e){}
 }
 async function saveIdentity(){
   el('devmsg').innerHTML='';
   var body={};
-  ['name','hostname','location','description'].forEach(function(f){
-    var v=el('id-'+f).value;if(v!=='')body[f==='name'?'device_name':f]=v;});
+  // name/hostname are omitted when empty (hostname must stay valid);
+  // location/description are always sent so they can be cleared.
+  var n=el('id-name').value,h=el('id-hostname').value;
+  if(n!=='')body.device_name=n;
+  if(h!=='')body.hostname=h;
+  body.location=el('id-location').value;
+  body.description=el('id-description').value;
   try{
     await api('/api/v1/device/identity','POST',body);
     el('devmsg').innerHTML='<div class="ok">Identity saved.</div>';
@@ -436,9 +487,15 @@ async function refreshTriggers(){
   el('trigmsg').innerHTML='';
   try{
     var ts=await api('/api/v1/triggers');
+    var names={};
+    try{
+      var ms=await api('/api/v1/macros');
+      (ms.macros||[]).forEach(function(m){names[m.macro_id]=m.name||m.macro_id;});
+    }catch(e2){}
     var html='<tr><th>ID</th><th>Source</th><th>GPIO</th><th>Edge</th><th>Debounce</th><th>Macro</th><th>Enabled</th><th></th></tr>';
     (ts.triggers||[]).forEach(function(t){
-      html+='<tr><td>'+esc(t.trigger_id)+'</td><td>'+esc(t.source)+'</td><td>'+(t.gpio_pin!=null?t.gpio_pin:'—')+'</td><td>'+(t.edge||'—')+'</td><td>'+(t.debounce_ms||'—')+'</td><td>'+esc(t.macro_id)+'</td><td>'+(t.enabled?'yes':'no')+'</td><td>'+
+      var mlabel=names[t.macro_id]||t.macro_id;
+      html+='<tr><td>'+esc(t.trigger_id)+'</td><td>'+esc(t.source)+'</td><td>'+(t.gpio_pin!=null?t.gpio_pin:'—')+'</td><td>'+(t.edge||'—')+'</td><td>'+(t.debounce_ms||'—')+'</td><td title="'+esc(t.macro_id)+'">'+esc(mlabel)+'</td><td>'+(t.enabled?'yes':'no')+'</td><td>'+
         '<button class="sec sm" onclick="editTrigger(\''+t.trigger_id+'\')">Edit</button> '+
         '<button class="dgr sm" onclick="deleteTrigger(\''+t.trigger_id+'\')">Delete</button></td></tr>';});
     el('triggerlist').innerHTML=html;
@@ -488,6 +545,70 @@ async function deleteTrigger(id){
   el('trigmsg').innerHTML='';
   try{await api('/api/v1/triggers/'+id,'DELETE');refreshTriggers();}
   catch(e){showErr('trigmsg',e);}
+}
+
+// ---- Security tab (spec 13.1.1: keys managed through the Web UI only).
+async function refreshKeys(){
+  el('keymsg').innerHTML='';el('keyonce').innerHTML='';
+  try{
+    var d=await api('/api/v1/keys');
+    var rows='<tr><th>ID</th><th>Label</th><th>Role</th><th>Created</th><th>Last used</th><th>State</th><th></th></tr>';
+    (d.keys||[]).forEach(function(k){
+      rows+='<tr><td>'+esc(k.key_id)+'</td><td>'+esc(k.label)+'</td><td>'+esc(k.role)+'</td><td class="muted">'+esc(k.created_at||'')+'</td><td class="muted">'+(k.last_used_at?esc(k.last_used_at):'never')+'</td><td>'+esc(k.state)+'</td><td>'+(k.state==='active'?('<button class="dgr sm" onclick="revokeKey(\''+esc(k.key_id)+'\')">Revoke</button>'):'')+'</td></tr>';
+    });
+    el('keylist').innerHTML=rows;
+  }catch(e){showErr('keymsg',e);}
+}
+async function createKey(){
+  el('keymsg').innerHTML='';el('keyonce').innerHTML='';
+  try{
+    var k=await api('/api/v1/keys','POST',{role:el('k-role').value,label:el('k-label').value});
+    el('keyonce').innerHTML='<div class="ok">Key <b>'+esc(k.key_id)+'</b> created. Copy it now — it is shown exactly once:<br><code>'+esc(k.key)+'</code></div>';
+    el('k-label').value='';
+    refreshKeys();
+  }catch(e){showErr('keymsg',e);}
+}
+async function revokeKey(id){
+  if(!confirm('Revoke key '+id+'? Controllers using it lose access immediately.'))return;
+  el('keymsg').innerHTML='';
+  try{await api('/api/v1/keys/'+id,'DELETE');refreshKeys();}
+  catch(e){showErr('keymsg',e);}
+}
+async function changePassword(){
+  el('pwmsg').innerHTML='';
+  try{
+    await api('/ui/password','POST',{password:el('k-pw').value});
+    el('k-pw').value='';
+    el('pwmsg').innerHTML='<div class="ok">Password changed.</div>';
+  }catch(e){showErr('pwmsg',e);}
+}
+
+// ---- Logs tab (spec 15.2): ascending seq, filter selects, seq-cursor paging.
+var logSince=0, logLastSeq=0, logDropped=0;
+async function refreshLogs(reset){
+  if(reset)logSince=0;
+  el('logmsg').innerHTML='';
+  try{
+    var q='?limit='+((parseInt(el('l-limit').value)||100));
+    if(el('l-cat').value)q+='&category='+el('l-cat').value;
+    if(el('l-level').value)q+='&level='+el('l-level').value;
+    q+='&since_seq='+logSince;
+    var d=await api('/api/v1/logs'+q);
+    var rows='<tr><th>seq</th><th>ts</th><th>level</th><th>category</th><th>event</th><th>actor</th><th>command</th></tr>';
+    var last=logSince;
+    (d.entries||[]).forEach(function(e){
+      last=e.seq;
+      rows+='<tr><td>'+e.seq+'</td><td class="muted">'+esc(e.ts||'')+'</td><td>'+esc(e.level)+'</td><td>'+esc(e.category)+'</td><td>'+esc(e.event||'')+'</td><td class="muted">'+(e.actor?esc(e.actor):'')+'</td><td class="muted">'+(e.command_id?esc(e.command_id):'')+'</td></tr>';
+    });
+    el('loglist').innerHTML=rows;
+    el('logdropped').textContent=(d.dropped>0)?(d.dropped+' entries before seq '+(logSince+1)+' have been overwritten (ring buffer, 512 entries)'):'';
+    logLastSeq=last;logDropped=d.dropped||0;
+  }catch(e){showErr('logmsg',e);}
+}
+function logPage(dir){
+  if(dir>0){if(logLastSeq>logSince)logSince=logLastSeq;}
+  else{logSince=0;}
+  refreshLogs(false);
 }
 
 checkSession();

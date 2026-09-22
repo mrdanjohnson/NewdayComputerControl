@@ -1,5 +1,6 @@
 #include "nvs_config.h"
 #include <ArduinoJson.h>
+#include <LittleFS.h>
 #include <esp_mac.h>
 #include <stdio.h>
 #include <string.h>
@@ -36,6 +37,89 @@ std::string slotKey(const char* key, uint8_t slot) {
 }
 
 std::string curKey(const char* key) { return std::string(key) + ".cur"; }
+
+// Double-slotted CRC persistence on LittleFS (spec 15.1 "persistent macros:
+// flash, same atomic-commit scheme"). Macro payloads reach ~50 KB at the full
+// 64-macro capacity — far beyond a single NVS entry's ~4 KB string limit —
+// so the macro/trigger stores live as two slot files with the commit marker
+// (a uchar) in NVS, written last. A torn write leaves the marker pointing at
+// the previous, intact slot. stdio fopen cannot reach LittleFS (VFS mount
+// prefixes), hence the Arduino File API.
+bool writeSlotFile(const char* slot0, const char* slot1, const char* cur_key,
+                   Preferences& prefs, const std::string& payload) {
+    uint8_t cur = prefs.getUChar(cur_key, 0);
+    if (cur > 1) cur = 0;
+    const char* target = cur ? slot0 : slot1; // the inactive slot
+    const std::string blob =
+        crcHex(crc32_bytes(reinterpret_cast<const uint8_t*>(payload.data()), payload.size())) +
+        payload;
+    {
+        File f = LittleFS.open(target, FILE_WRITE);
+        if (!f) return false;
+        const size_t w = f.write(reinterpret_cast<const uint8_t*>(blob.c_str()), blob.size());
+        f.close();
+        if (w != blob.size()) return false;
+    }
+    // Readback verification before committing the marker (mirrors writeRecord).
+    {
+        File r = LittleFS.open(target, FILE_READ);
+        if (!r) return false;
+        bool same = r.size() == (long)blob.size();
+        if (same) {
+            for (size_t i = 0; i < blob.size() && same; i++) {
+                if (r.read() != (int)(uint8_t)blob[i]) same = false;
+            }
+        }
+        r.close();
+        if (!same) return false;
+    }
+    prefs.putUChar(cur_key, cur ? 0 : 1);
+    return true;
+}
+
+bool readSlotFile(const char* slot0, const char* slot1, const char* cur_key, Preferences& prefs,
+                  std::string& payload) {
+    uint8_t cur = prefs.getUChar(cur_key, 0);
+    if (cur > 1) cur = 0;
+    // Committed slot first, then the previous copy (spec 15.1 fallback).
+    for (int attempt = 0; attempt < 2; attempt++) {
+        const uint8_t slot = (attempt == 0) ? cur : (uint8_t)(cur ^ 1);
+        const char* path = slot ? slot1 : slot0;
+        File f = LittleFS.open(path, FILE_READ);
+        if (!f) continue;
+        std::string blob;
+        blob.reserve(f.size());
+        while (f.available()) blob += (char)f.read();
+        f.close();
+        if (blob.size() < 9) continue;
+        const uint32_t want = (uint32_t)strtoul(blob.c_str(), nullptr, 16);
+        const std::string body = blob.substr(8);
+        if (crc32_bytes(reinterpret_cast<const uint8_t*>(body.data()), body.size()) == want) {
+            payload = std::move(body);
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string linesToJsonArray(const std::vector<std::string>& lines) {
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    for (const std::string& line : lines) arr.add(line);
+    std::string out;
+    serializeJson(doc, out);
+    return out;
+}
+
+bool jsonArrayToLines(const std::string& json, std::vector<std::string>& out) {
+    JsonDocument doc;
+    if (deserializeJson(doc, json) || !doc.is<JsonArray>()) return false;
+    out.clear();
+    for (JsonVariantConst v : doc.as<JsonArrayConst>()) {
+        if (v.is<const char*>()) out.emplace_back(v.as<const char*>());
+    }
+    return true;
+}
 
 } // namespace
 mcco::Identity ConfigStore::factoryIdentity() {
@@ -239,45 +323,23 @@ bool ConfigStore::hydrateKeys(mcco::KeyStore& ks) {
 }
 
 bool ConfigStore::persistMacroLines(const std::vector<std::string>& lines) {
-    JsonDocument doc;
-    JsonArray arr = doc.to<JsonArray>();
-    for (const std::string& line : lines) arr.add(line);
-    std::string out;
-    serializeJson(doc, out);
-    return writeRecord("macros", out);
+    return writeSlotFile("/mstore.0", "/mstore.1", "macros.cur", prefs_, linesToJsonArray(lines));
 }
 
 bool ConfigStore::loadMacroLines(std::vector<std::string>& out) {
     std::string tmp;
-    if (!readRecord("macros", tmp)) return false;
-    JsonDocument doc;
-    if (deserializeJson(doc, tmp) || !doc.is<JsonArray>()) return false;
-    out.clear();
-    for (JsonVariantConst v : doc.as<JsonArrayConst>()) {
-        if (v.is<const char*>()) out.emplace_back(v.as<const char*>());
-    }
-    return true;
+    if (!readSlotFile("/mstore.0", "/mstore.1", "macros.cur", prefs_, tmp)) return false;
+    return jsonArrayToLines(tmp, out);
 }
 
 bool ConfigStore::persistTriggerLines(const std::vector<std::string>& lines) {
-    JsonDocument doc;
-    JsonArray arr = doc.to<JsonArray>();
-    for (const std::string& line : lines) arr.add(line);
-    std::string out;
-    serializeJson(doc, out);
-    return writeRecord("triggers", out);
+    return writeSlotFile("/tstore.0", "/tstore.1", "triggers.cur", prefs_, linesToJsonArray(lines));
 }
 
 bool ConfigStore::loadTriggerLines(std::vector<std::string>& out) {
     std::string tmp;
-    if (!readRecord("triggers", tmp)) return false;
-    JsonDocument doc;
-    if (deserializeJson(doc, tmp) || !doc.is<JsonArray>()) return false;
-    out.clear();
-    for (JsonVariantConst v : doc.as<JsonArrayConst>()) {
-        if (v.is<const char*>()) out.emplace_back(v.as<const char*>());
-    }
-    return true;
+    if (!readSlotFile("/tstore.0", "/tstore.1", "triggers.cur", prefs_, tmp)) return false;
+    return jsonArrayToLines(tmp, out);
 }
 
 bool ConfigStore::saveAdminPassword(const std::string& salt_b64, const std::string& hash_b64) {

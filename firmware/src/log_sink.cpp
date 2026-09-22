@@ -53,6 +53,8 @@ void RamLogSink::write(mcco::LogCategory cat, mcco::LogLevel level, const char* 
 
         Entry& slot = ring_[(head_ + size_) % kCapacity];
         slot.seq = next_seq_;
+        slot.cat = cat;
+        slot.level = level;
         slot.json = std::move(json);
         if (size_ < kCapacity) {
             ++size_;
@@ -67,13 +69,31 @@ void RamLogSink::write(mcco::LogCategory cat, mcco::LogLevel level, const char* 
 }
 
 std::vector<std::string> RamLogSink::entries_since(uint32_t since, size_t limit) const {
+    return entries_since(since, limit, nullptr, nullptr, nullptr);
+}
+
+std::vector<std::string> RamLogSink::entries_since(uint32_t since, size_t limit,
+                                                   const mcco::LogCategory* category,
+                                                   const mcco::LogLevel* level,
+                                                   uint32_t* dropped_out) const {
     Guard g(mutex_);
+    if (dropped_out) {
+        *dropped_out = mcco::log_dropped_count(since, size_ == 0 ? 0 : ring_[head_].seq);
+    }
     std::vector<std::string> out;
     for (size_t i = 0; i < size_ && out.size() < limit; i++) {
         const Entry& e = ring_[(head_ + i) % kCapacity];
-        if (e.seq > since) out.push_back(e.json);
+        if (e.seq <= since) continue;
+        if (category && e.cat != *category) continue;
+        if (level && e.level != *level) continue;
+        out.push_back(e.json);
     }
     return out;
+}
+
+uint32_t RamLogSink::oldest_seq() const {
+    Guard g(mutex_);
+    return size_ == 0 ? 0 : ring_[head_].seq;
 }
 
 size_t RamLogSink::count() const {

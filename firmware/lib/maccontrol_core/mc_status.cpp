@@ -58,6 +58,8 @@ void build_status_mode_a(JsonDocument& doc, const Identity& id, bool usb_up,
               identity_observed_at, -1, Freshness::Fresh);
     tuple_str(device, "hostname", id.hostname.c_str(), Source::Esp32Direct,
               identity_observed_at, -1, Freshness::Fresh);
+    tuple_str(device, "device_id", id.device_id.c_str(), Source::Esp32Direct,
+              identity_observed_at, -1, Freshness::Fresh);
 
     JsonObject conn = doc["connection"].to<JsonObject>();
     tuple_bool(conn, "usb", usb_up, Source::Esp32Direct, now, -1, Freshness::Fresh);

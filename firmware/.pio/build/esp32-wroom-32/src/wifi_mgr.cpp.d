@@ -199,12 +199,12 @@
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/cbuf.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/esp_system/include/esp_task_wdt.h \
  src/log_sink.h lib/maccontrol_core/mc_clock.h \
- lib/maccontrol_core/mc_log.h src/nvs_config.h \
- /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
- lib/maccontrol_core/mc_auth.h lib/maccontrol_core/mc_types.h \
+ lib/maccontrol_core/mc_log.h src/mdns_service.h \
  lib/maccontrol_core/mc_status.h \
  .pio/libdeps/esp32-wroom-32/ArduinoJson/src/ArduinoJson.h \
  .pio/libdeps/esp32-wroom-32/ArduinoJson/src/ArduinoJson.hpp \
  .pio/libdeps/esp32-wroom-32/ArduinoJson/src/ArduinoJson/Configuration.hpp \
- src/status_cache.h \
+ lib/maccontrol_core/mc_types.h src/nvs_config.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
+ lib/maccontrol_core/mc_auth.h src/status_cache.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/freertos/include/freertos/timers.h

@@ -180,6 +180,7 @@
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_hw_support/include/soc/esp32/spiram.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/io_pin_remap.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Arduino.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/USB.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/USB/src/USBHIDKeyboard.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Print.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/USB/src/USBHID.h \

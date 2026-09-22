@@ -11,11 +11,8 @@ class ConfigStore;
 // In-RAM ring buffer of the last 512 log entries (spec 15.2 schema:
 // {seq,ts,category,event,level,command_id,request_id,session_id:null,actor,
 // detail}). The seq counter is monotonic, 32-bit, persisted in NVS — loaded
-// at boot, re-saved periodically and when dirty. Thread-safe.
-//
-// Phase 1 note: the spec calls for flash persistence and a GET /api/v1/logs
-// endpoint; the brief scopes Phase 1 to the in-RAM ring plus entries_since()
-// for later phases, so that is what is implemented here.
+// at boot, re-saved periodically and when dirty. Thread-safe. Retrieval is
+// served by GET /api/v1/logs (Phase 3) via the filtered entries_since().
 class RamLogSink : public mcco::ILog {
 public:
     RamLogSink(ConfigStore& config, mcco::IClock& clock);
@@ -27,6 +24,14 @@ public:
 
     // Entries with seq strictly greater than `since`, ascending, at most limit.
     std::vector<std::string> entries_since(uint32_t since, size_t limit) const;
+    // Filtered variant (spec 15.2): null category/level = no filter. When
+    // `dropped_out` is non-null it receives log_dropped_count(since, oldest).
+    std::vector<std::string> entries_since(uint32_t since, size_t limit,
+                                           const mcco::LogCategory* category,
+                                           const mcco::LogLevel* level,
+                                           uint32_t* dropped_out) const;
+    // Oldest retained seq, or 0 when the ring is empty.
+    uint32_t oldest_seq() const;
     size_t count() const;
 
     // Called after ConfigStore::load() so the persisted seq counter is honored
@@ -38,6 +43,8 @@ public:
 private:
     struct Entry {
         uint32_t seq;
+        mcco::LogCategory cat;
+        mcco::LogLevel level;
         std::string json;
     };
     void persistSeqIfDue(bool force);

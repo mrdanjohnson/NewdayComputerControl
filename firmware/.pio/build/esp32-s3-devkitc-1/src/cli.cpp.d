@@ -200,6 +200,15 @@
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src/WiFiUdp.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Udp.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/cbuf.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/driver/include/driver/uart.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_ringbuf/include/freertos/ringbuf.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/hal/esp32s3/include/hal/uart_ll.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/hal/platform_port/include/hal/misc.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/soc/include/soc/uart_periph.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/soc/esp32s3/include/soc/uart_reg.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/soc/esp32s3/include/soc/uart_struct.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/soc/esp32s3/include/soc/periph_defs.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/soc/esp32s3/include/soc/uart_pins.h \
  src/esp_clock.h lib/maccontrol_core/mc_clock.h src/esp_rng.h \
  lib/maccontrol_core/mc_random.h src/log_sink.h \
  lib/maccontrol_core/mc_log.h lib/maccontrol_core/mc_auth.h \

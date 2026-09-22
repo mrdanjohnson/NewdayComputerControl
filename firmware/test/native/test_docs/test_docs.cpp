@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 #include "../../lib/maccontrol_core/mc_error.h"
 #include "../../lib/maccontrol_core/mc_iso8601.h"
+#include "../../lib/maccontrol_core/mc_log.h"
 #include "../../lib/maccontrol_core/mc_sha256.h"
 #include "../../lib/maccontrol_core/mc_status.h"
 #include <set>
@@ -217,6 +218,21 @@ TEST(Docs, Iso8601RoundTripAcrossEpochs) {
         ASSERT_TRUE(mcco::iso8601_parse(s, epoch)) << s;
         EXPECT_EQ(mcco::iso8601_format(epoch), s) << s;
     }
+}
+
+TEST(Docs, LogDroppedCount) {
+    // Empty ring: nothing can be dropped.
+    EXPECT_EQ(mcco::log_dropped_count(0, 0), 0u);
+    EXPECT_EQ(mcco::log_dropped_count(100, 0), 0u);
+    // Ring starts at seq 1 (oldest retained 1): nothing dropped from since=0.
+    EXPECT_EQ(mcco::log_dropped_count(0, 1), 0u);
+    // Ring wrapped: oldest retained is 41; a cursor at 10 loses seqs 11..40.
+    EXPECT_EQ(mcco::log_dropped_count(10, 41), 30u);
+    // Cursor inside the retained window loses nothing.
+    EXPECT_EQ(mcco::log_dropped_count(40, 41), 0u);
+    EXPECT_EQ(mcco::log_dropped_count(41, 41), 0u);
+    // Cursor exactly one below the oldest retains everything requested.
+    EXPECT_EQ(mcco::log_dropped_count(0, 2), 1u);
 }
 
 } // namespace

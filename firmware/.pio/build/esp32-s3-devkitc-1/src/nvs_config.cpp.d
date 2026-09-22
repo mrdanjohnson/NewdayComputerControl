@@ -186,5 +186,7 @@
  .pio/libdeps/esp32-s3-devkitc-1/ArduinoJson/src/ArduinoJson.h \
  .pio/libdeps/esp32-s3-devkitc-1/ArduinoJson/src/ArduinoJson.hpp \
  .pio/libdeps/esp32-s3-devkitc-1/ArduinoJson/src/ArduinoJson/Configuration.hpp \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/LittleFS/src/LittleFS.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/FS/src/FS.h \
  lib/maccontrol_core/mc_ids.h lib/maccontrol_core/mc_random.h \
  lib/maccontrol_core/mc_iso8601.h

@@ -92,6 +92,54 @@ per class; confirm in Phase 3).
   USB HID reports and the expected `unconfirmed`/`hid_only` terminals; the
   `--allow-dispatch-error` flag will not be needed.
 
+## ESP32-S3 acceptance (2026-09-21) — PASSED
+
+Hardware: ESP32-S3-DevKitC-1 (16 MB flash, USB-JTAG + CH343 COM port). Final
+firmware: AT-01/AT-02 **all checks passed** (real `unconfirmed`/`hid_only`
+terminals, no `--allow-dispatch-error`), then AT-03/AT-04 **all checks
+passed twice consecutively** (§16.1), including the mid-test serial reboot,
+boot reconciliation (`failed/esp32_restarted`), and cross-reboot persistence.
+Accept-to-202 latency 0.10 s / 0.18 s. Web UI checked in a browser (four
+tabs, Dashboard RUN button driving real HID keystrokes to the attached Mac).
+
+Firmware fixes that were required to get here (all in the tree now):
+
+1. **HID enumeration**: `HidKeyboard::begin()` never called `USB.begin()`, so
+   TinyUSB never started and every dispatch died `dispatch_error`. Added.
+2. **`/status` schema**: `build_status_mode_a` omitted `device.device_id`
+   (AT-04 asserts it persists across reboot). Added with the standard
+   provenance tuple.
+3. **S3 serial console** (`src/cli.cpp`): the IDF UART0 driver TX path never
+   becomes operational in this core build over the USB-Serial-JTAG port
+   (banner/CLI silent; ROM/`ets_printf` output works), and the
+   `usb_serial_jtag` VCP write path delivers one batch per boot. The console
+   shim on S3 therefore TXes via `ets_printf` and RXes via `uart_read_bytes`
+   with a direct RX-FIFO-register fallback (`MC_CONSOLE_JTAG`). Other chips
+   keep the plain `Serial` console.
+4. **mDNS AAAA** (`src/wifi_mgr.cpp`): macOS resolves `.local` names by
+   asking AAAA first and stalls a flat ~5 s on an unanswered AAAA before
+   falling back to A. The STA's IPv6 link-local is now formed on first
+   connect — *after* mDNS is running, or the responder never learns it — so
+   AAAA is answered and first-lookup latency drops ~5 s → ~0 ms.
+
+S3 operational notes (bring-up checklist details):
+
+- **Port roles on this board**: the port labeled `usb` is the native USB
+  (JTAG console + TinyUSB HID). Once TinyUSB starts (`USB.begin()`), the
+  JTAG serial function disappears from the host — flashing and the AT
+  `--serial-port` reset must use the `com` port (CH343 UART bridge), which
+  auto-resets fine at 921600. Keep `usb` on the target Mac for HID.
+- **macOS asserts DTR+RTS on every serial open**; on the JTAG port that
+  straps the chip into download mode (GPIO0 low) at reset. If the board ever
+  seems bricked into `waiting for download`, power-cycle it with a clean
+  cable on the COM port.
+- Use `scripts/serial_cli.py` for scripted CLI sessions (`pio device monitor`
+  needs an interactive terminal). Run `at03_at04.py` with the venv python
+  (`.venv/bin/python`) so pyserial resolves.
+- Failed-auth attempts (10 consecutive from one IP) trigger the 60 s
+  lockout answering 401 — don't probe the API with ad-hoc wrong headers
+  between AT runs.
+
 ## WROOM-32 incident (2026-09-15) and fixes
 
 During Phase 2 acceptance runs the WROOM-32 progressively degraded (~5 s

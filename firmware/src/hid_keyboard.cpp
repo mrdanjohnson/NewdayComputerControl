@@ -18,6 +18,7 @@
 #endif
 
 #if MC_HAS_USB_HID
+#include <USB.h>
 #include <USBHIDKeyboard.h>
 #include <tusb.h>
 
@@ -31,6 +32,9 @@ USBHIDKeyboard Keyboard;
 void HidKeyboard::begin() {
 #if MC_HAS_USB_HID
     Keyboard.begin();
+    // TinyUSB does not start on its own: without this the device never
+    // enumerates and every dispatch dies as dispatch_error.
+    USB.begin();
 #endif
 }
 

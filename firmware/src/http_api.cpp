@@ -17,6 +17,7 @@
 #include "mc_iso8601.h"
 #include "mc_ledger.h"
 #include "mc_log.h"
+#include "mc_openapi.h"
 #include "mc_rate_limit.h"
 #include "mc_sha256.h"
 #include "mdns_service.h"
@@ -376,6 +377,33 @@ void HttpApi::handleClient(WiFiClient& client) {
         return;
     }
 
+    if (req.method == "POST" && req.path == "/ui/password") {
+        // Admin password change; requires a valid session (spec 13.1.1).
+        const std::string tok = cookieValue(req.cookie, "mc_session");
+        if (!ctx->web_ui || !ctx->web_ui->validateSession(tok)) {
+            sendError(mcco::ErrCode::Unauthorized);
+            return;
+        }
+        JsonDocument doc;
+        if (deserializeJson(doc, req.body) || !doc.is<JsonObject>() ||
+            !doc["password"].is<const char*>()) {
+            sendError(mcco::ErrCode::BadRequest, "expected {password}");
+            return;
+        }
+        std::string err;
+        if (!ctx->web_ui->setPassword(doc["password"].as<const char*>(), err)) {
+            sendError(mcco::ErrCode::BadRequest, err.c_str());
+            return;
+        }
+        // The password itself is never printed or logged (spec 13.1.1).
+        ctx->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Info, "admin_password_set",
+                        nullptr, request_id.c_str(), "webui", nullptr);
+        JsonDocument resp;
+        resp["ok"] = true;
+        sendJson(200, resp);
+        return;
+    }
+
     // ---- Agent surface: no pairing exists in Phase 1 (spec 4.3.1).
     if (req.path.compare(0, 10, "/agent/v1/") == 0) {
         sendError(mcco::ErrCode::Unauthorized);
@@ -491,6 +519,58 @@ void HttpApi::handleClient(WiFiClient& client) {
         JsonDocument doc;
         ctx->status_cache->buildCapabilities(doc);
         sendJson(200, doc);
+        return;
+    }
+    if (req.method == "GET" && req.path == "/api/v1/openapi.json") {
+        if (!roleCheck(mcco::Role::Read)) return;
+        // Static contract document (spec 17.1.1); the string lives in
+        // maccontrol_core so native tests can validate it against the routes.
+        sendRaw(200, mcco::kOpenApiJson);
+        return;
+    }
+    if (req.method == "GET" && req.path == "/api/v1/logs") {
+        if (!roleCheck(mcco::Role::Read)) return;
+        // Ring-buffer log (spec 15.2). Filters are closed enums; a value
+        // outside the enum is a client error, not an empty result.
+        const mcco::LogCategory* catp = nullptr;
+        const mcco::LogLevel* lvlp = nullptr;
+        mcco::LogCategory cat;
+        mcco::LogLevel lvl;
+        std::string v;
+        if (queryParam(req.query, "category", v)) {
+            if (!mcco::log_category_from_string(v.c_str(), cat)) {
+                sendError(mcco::ErrCode::BadRequest, "invalid category");
+                return;
+            }
+            catp = &cat;
+        }
+        if (queryParam(req.query, "level", v)) {
+            if (!mcco::log_level_from_string(v.c_str(), lvl)) {
+                sendError(mcco::ErrCode::BadRequest, "invalid level");
+                return;
+            }
+            lvlp = &lvl;
+        }
+        uint32_t since = 0;
+        if (queryParam(req.query, "since_seq", v)) since = (uint32_t)strtoul(v.c_str(), nullptr, 10);
+        size_t limit = 100;
+        if (queryParam(req.query, "limit", v)) {
+            limit = (size_t)strtoul(v.c_str(), nullptr, 10);
+            if (limit == 0) limit = 100;
+            if (limit > 512) limit = 512; // spec 15.2 maximum
+        }
+        uint32_t dropped = 0;
+        std::vector<std::string> entries =
+            ctx->log->entries_since(since, limit, catp, lvlp, &dropped);
+        std::string body = "{\"entries\":[";
+        for (size_t i = 0; i < entries.size(); i++) {
+            if (i) body += ",";
+            body += entries[i];
+        }
+        body += "],\"dropped\":";
+        body += std::to_string(dropped);
+        body += "}";
+        sendRaw(200, body);
         return;
     }
     if (req.method == "POST" && req.path == "/api/v1/commands") {
@@ -962,6 +1042,18 @@ void HttpApi::handleClient(WiFiClient& client) {
     // ---- Device identity (spec ch.14 matrix: the ESP32 Web UI owns identity).
     // No identity REST endpoint exists in the spec ch.12 inventory; this
     // ADMIN-gated surface backs the Device page (Phase 3 reconciles).
+    if (req.method == "GET" && req.path == "/api/v1/device/identity") {
+        if (!roleCheck(mcco::Role::Read)) return;
+        const mcco::Identity id = ctx->config->identity();
+        JsonDocument resp;
+        resp["device_name"] = id.device_name;
+        resp["hostname"] = id.hostname;
+        resp["location"] = id.location;
+        resp["description"] = id.description;
+        resp["device_id"] = id.device_id;
+        sendJson(200, resp);
+        return;
+    }
     if (req.method == "POST" && req.path == "/api/v1/device/identity") {
         if (!roleCheck(mcco::Role::Admin)) return;
         JsonDocument doc;
@@ -1006,6 +1098,112 @@ void HttpApi::handleClient(WiFiClient& client) {
         resp["description"] = id.description;
         resp["device_id"] = id.device_id;
         sendJson(200, resp);
+        return;
+    }
+
+    // ---- API key management (AMENDMENT: Web UI session only, spec 13.1.1 —
+    // keys are created/listed/revoked through the Web UI by an ADMIN session,
+    // never with an API key).
+    if (req.path == "/api/v1/keys" || req.path.compare(0, 13, "/api/v1/keys/") == 0) {
+        if (!session_auth) {
+            sendError(mcco::ErrCode::Forbidden, "key management requires a Web UI session");
+            return;
+        }
+        if (req.method == "GET" && req.path == "/api/v1/keys") {
+            JsonDocument doc;
+            JsonArray arr = doc["keys"].to<JsonArray>();
+            Guard g(ctx->engine_mutex);
+            for (const mcco::KeyRecord& r : ctx->keys->records()) {
+                JsonObject o = arr.add<JsonObject>();
+                o["key_id"] = r.key_id;
+                o["label"] = r.label;
+                o["role"] = mcco::role_to_string(r.role);
+                o["key_sha256"] = r.key_sha256;
+                o["created_at"] = r.created_at ? mcco::iso8601_format(r.created_at).c_str() : "";
+                o["last_used_at"] = r.last_used_at ? mcco::iso8601_format(r.last_used_at).c_str() : "";
+                o["expires_at"] = r.expires_at ? mcco::iso8601_format(r.expires_at).c_str() : "";
+                o["state"] = r.active ? "active" : "revoked";
+            }
+            sendJson(200, doc);
+            return;
+        }
+        if (req.method == "POST" && req.path == "/api/v1/keys") {
+            JsonDocument body;
+            if (deserializeJson(body, req.body) || !body.is<JsonObject>() ||
+                !body["role"].is<const char*>() || !body["label"].is<const char*>()) {
+                sendError(mcco::ErrCode::BadRequest, "expected {role, label}");
+                return;
+            }
+            mcco::Role role;
+            if (!mcco::role_from_string(body["role"].as<const char*>(), role)) {
+                sendError(mcco::ErrCode::BadRequest, "role must be READ, CONTROL or ADMIN");
+                return;
+            }
+            const char* label = body["label"].as<const char*>();
+            std::string raw = mcco::make_api_key(*ctx->rng);
+            std::string key_id;
+            bool added;
+            {
+                Guard g(ctx->engine_mutex);
+                added = ctx->keys->add(raw, role, label, ctx->clock->epoch_seconds(), key_id);
+            }
+            if (!added) {
+                sendError(mcco::ErrCode::Conflict, "key store full (max 8 active keys)");
+                return;
+            }
+            if (!ctx->config->persistKeys(*ctx->keys)) {
+                sendError(mcco::ErrCode::InternalError, "persist failed; key will be lost on reboot");
+                return;
+            }
+            // The raw key is shown exactly once here and never written to the log.
+            ctx->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Info, "key_created",
+                            nullptr, request_id.c_str(), nullptr,
+                            (std::string("{\"key_id\":\"") + key_id + "\"}").c_str());
+            JsonDocument resp;
+            resp["key_id"] = key_id;
+            resp["label"] = label;
+            resp["role"] = mcco::role_to_string(role);
+            resp["key"] = raw.c_str();
+            resp["state"] = "active";
+            sendJson(201, resp);
+            return;
+        }
+        if (req.method == "DELETE" && req.path.size() > 13) {
+            const std::string key_id = req.path.substr(13);
+            bool revoked;
+            {
+                Guard g(ctx->engine_mutex);
+                revoked = ctx->keys->revoke(key_id);
+            }
+            if (!revoked) {
+                sendError(mcco::ErrCode::NotFound, "no such active key");
+                return;
+            }
+            ctx->config->persistKeys(*ctx->keys);
+            ctx->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Warn, "key_revoked",
+                            nullptr, request_id.c_str(), nullptr,
+                            (std::string("{\"key_id\":\"") + key_id + "\"}").c_str());
+            JsonDocument resp;
+            resp["key_id"] = key_id;
+            resp["state"] = "revoked";
+            sendJson(200, resp);
+            return;
+        }
+        sendError(mcco::ErrCode::NotFound);
+        return;
+    }
+
+    // ---- Agent surface (Mode A: honest 409s, no ledger records, spec 12.1.1).
+    if (req.method == "GET" && req.path == "/api/v1/agent/status") {
+        if (!roleCheck(mcco::Role::Read)) return;
+        sendError(mcco::ErrCode::AgentNotPaired);
+        return;
+    }
+    if (req.method == "POST" && req.path.compare(0, 13, "/api/v1/apps/") == 0) {
+        if (!roleCheck(mcco::Role::Control)) return;
+        // app_launch/app_quit route through the MCA (Phase 4); rejected
+        // pre-ledger here exactly like the generic submission path.
+        sendError(mcco::ErrCode::AgentNotPaired);
         return;
     }
 

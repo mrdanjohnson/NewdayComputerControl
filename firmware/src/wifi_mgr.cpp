@@ -4,6 +4,7 @@
 #include <esp_task_wdt.h>
 #include "log_sink.h"
 #include "mc_log.h"
+#include "mdns_service.h"
 #include "nvs_config.h"
 #include "status_cache.h"
 
@@ -58,6 +59,18 @@ void WifiMgr::taskEntry(void* arg) {
                 was_connected = true;
                 backoff_idx = 0;
                 ctx->status_cache->setNetworkUp(true);
+                // Form the IPv6 link-local address now, after mDNS is running,
+                // so the responder learns the address and answers AAAA queries
+                // (macOS stalls ~5 s on an unanswered AAAA for .local names).
+                static bool ipv6_started = false;
+                if (!ipv6_started) {
+                    ipv6_started = true;
+                    WiFi.enableIpV6();
+                }
+                // Spec 3.1: an unsolicited announcement MUST be issued on
+                // joining a network. Reconnects (not just boot) therefore
+                // re-announce; harmless if the label is unchanged.
+                if (ctx->mdns) ctx->mdns->reannounce(ctx->config->identity());
                 ctx->log->write(mcco::LogCategory::System, mcco::LogLevel::Info,
                                 "wifi_connected", nullptr, nullptr, nullptr, nullptr);
             }
