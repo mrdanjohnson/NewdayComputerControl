@@ -21,12 +21,14 @@
 #endif
 #include "esp_clock.h"
 #include "esp_rng.h"
+#include "agent_link.h"
 #include "log_sink.h"
 #include "mc_auth.h"
 #include "mc_engine.h"
 #include "mc_ids.h"
 #include "mc_iso8601.h"
 #include "mc_log.h"
+#include "mc_pairing.h"
 #include "mdns_service.h"
 #include "nvs_config.h"
 #include "status_cache.h"
@@ -130,7 +132,7 @@ void Cli::printBanner() {
     const mcco::Identity& id = ctx_->config->identity();
     uint8_t mac[6] = {0};
     esp_efuse_mac_get_default(mac);
-    console_printf("\nMacControl Phase 1 (Mode A) — hostname: %s  device_id: %s  mac: %02x:%02x:%02x:%02x:%02x:%02x\n",
+    console_printf("\nMacControl (Mode A/B) — hostname: %s  device_id: %s  mac: %02x:%02x:%02x:%02x:%02x:%02x\n",
                   id.hostname.c_str(), id.device_id.c_str(), mac[0], mac[1], mac[2], mac[3],
                   mac[4], mac[5]);
     console_println("Physical console = ADMIN. Type 'help' for commands.");
@@ -150,6 +152,8 @@ void Cli::cmdHelp() {
         "  ntp set <server>\n"
         "  admin set <password>   (min 10 chars; never echoed to the log)\n"
         "  admin status\n"
+        "  agent pair [seconds]   (open the pairing window, 60-600, default 120)\n"
+        "  agent status\n"
         "  status\n"
         "  reboot");
 }
@@ -173,6 +177,8 @@ void Cli::handleLine(const std::string& line) {
         cmdAdmin(args);
     } else if (cmd == "status") {
         cmdStatus();
+    } else if (cmd == "agent") {
+        cmdAgent(args);
     } else if (cmd == "reboot") {
         cmdReboot();
     } else {
@@ -384,6 +390,82 @@ void Cli::cmdAdmin(const std::vector<std::string>& args) {
         return;
     }
     console_println("usage: admin set <password> | admin status");
+}
+
+void Cli::cmdAgent(const std::vector<std::string>& args) {
+    if (args.empty()) {
+        console_println("usage: agent pair [seconds] | agent status");
+        return;
+    }
+    if (args[0] == "pair") {
+        uint32_t duration_s = mcco::PairingStore::kDefaultWindowS;
+        if (args.size() >= 2) {
+            char* endp = nullptr;
+            unsigned long n = strtoul(args[1].c_str(), &endp, 10);
+            if (!endp || *endp != '\0' || n < mcco::PairingStore::kMinWindowS ||
+                n > mcco::PairingStore::kMaxWindowS) {
+                console_printf("duration must be %u-%u seconds\n",
+                               (unsigned)mcco::PairingStore::kMinWindowS,
+                               (unsigned)mcco::PairingStore::kMaxWindowS);
+                return;
+            }
+            duration_s = (uint32_t)n;
+        }
+        bool opened;
+        std::string code;
+        uint32_t remaining_s = 0;
+        {
+            Guard g(ctx_->engine_mutex);
+            opened = ctx_->pairing->openWindow(duration_s);
+            if (opened) {
+                code = ctx_->pairing->pairingCode();
+                remaining_s = ctx_->pairing->windowSecondsRemaining();
+            }
+        }
+        if (!opened) {
+            console_println("could not open pairing window");
+            return;
+        }
+        // Opening a window does not change the pairing state, so engine mode
+        // and the mDNS TXT stay as they are; the HTTP route is authoritative
+        // for the ceremony itself.
+        console_printf("PAIRING CODE: %s  (expires in %us)\n", code.c_str(),
+                       (unsigned)remaining_s);
+        return;
+    }
+    if (args[0] == "status") {
+        mcco::PairingState state;
+        std::string pairing_id, agent_instance_id;
+        uint64_t created_at = 0;
+        uint32_t remaining_s = 0, failed = 0;
+        {
+            Guard g(ctx_->engine_mutex);
+            state = ctx_->pairing->state();
+            if (const mcco::PairingRecord* rec = ctx_->pairing->activeRecord()) {
+                pairing_id = rec->pairing_id;
+                agent_instance_id = rec->agent_instance_id;
+                created_at = rec->created_at;
+            }
+            if (state == mcco::PairingState::PairingWindow) {
+                remaining_s = ctx_->pairing->windowSecondsRemaining();
+                failed = ctx_->pairing->windowFailedAttempts();
+            }
+        }
+        console_printf("pairing state: %s\n", mcco::pairing_state_to_string(state));
+        if (!pairing_id.empty()) {
+            console_printf("pairing_id: %s\nagent_instance_id: %s\ncreated_at: %s\n",
+                           pairing_id.c_str(), agent_instance_id.c_str(),
+                           mcco::iso8601_format(created_at).c_str());
+        }
+        if (state == mcco::PairingState::PairingWindow) {
+            console_printf("window: %us remaining, %u failed attempts\n", (unsigned)remaining_s,
+                           (unsigned)failed);
+        }
+        console_printf("agent session: %s\n",
+                       ctx_->agent_link->sessionActive() ? "ACTIVE" : "inactive");
+        return;
+    }
+    console_println("usage: agent pair [seconds] | agent status");
 }
 
 void Cli::cmdReboot() {

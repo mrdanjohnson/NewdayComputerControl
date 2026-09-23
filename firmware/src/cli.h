@@ -22,6 +22,7 @@ private:
     void cmdWifi(const std::vector<std::string>& args);
     void cmdNtp(const std::vector<std::string>& args);
     void cmdStatus();
+    void cmdAgent(const std::vector<std::string>& args);
     void cmdReboot();
     void cmdAdmin(const std::vector<std::string>& args);
 

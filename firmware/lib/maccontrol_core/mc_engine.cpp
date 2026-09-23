@@ -1,5 +1,6 @@
 #include "mc_engine.h"
 #include <ArduinoJson.h>
+#include <cstring>
 
 namespace mcco {
 
@@ -53,10 +54,20 @@ SubmissionOutcome CommandEngine::submit(const Submission& sub) {
     }
 
     // Availability: the surface is closed per phase (spec 12.1.1, 13.3, 16.3).
-    // app_launch/app_quit are agent-dependent: reject pre-ledger in Mode A.
+    // app_launch/app_quit are agent-dependent: the glue's gate decides the
+    // deterministic pre-ledger 409 (agent_not_paired / agent_offline /
+    // command_disabled / app_not_allowlisted) or accepts in Mode B.
     if (sub.type == CommandType::AppLaunch || sub.type == CommandType::AppQuit) {
-        out.error = ErrCode::AgentNotPaired; // pre-ledger: no record created
-        return out;
+        if (agent_gate_) {
+            std::optional<ErrCode> gate_err = agent_gate_(sub);
+            if (gate_err) {
+                out.error = *gate_err;
+                return out;
+            }
+        } else {
+            out.error = ErrCode::AgentNotPaired; // no agent wired: Mode A
+            return out;
+        }
     }
     // macro_execute resolves against the macro store via the resolver hook
     // (spec 10.3): unknown macro_id terminates pre-ledger as 404 not_found.
@@ -124,7 +135,7 @@ SubmissionOutcome CommandEngine::submit(const Submission& sub) {
     rec.parameters_json = sub.parameters_json;
     rec.requested_by = sub.requested_by;
     rec.requested_at = now;
-    rec.mode_at_accept = 'A';
+    rec.mode_at_accept = mode_; // pinned at acceptance (spec 5.1.1)
     rec.state = CommandState::Accepted;
     rec.deadline_at = now + default_deadline_s(sub.type);
     rec.has_window = (sub.type == CommandType::Sleep || sub.type == CommandType::Restart ||
@@ -165,6 +176,15 @@ bool CommandEngine::complete_dispatch(const std::string& command_id, bool dispat
     disp.deadline_at =
         now + (deadline_override_s ? deadline_override_s : default_deadline_s(disp.type));
     if (!ledger_.append_revision(disp)) return false;
+
+    // Mode B agent commands (spec 5.2.1): dispatch queues the action with the
+    // MCA; the record stays `confirming` until agent_event() satisfies the
+    // predicate or the deadline sweep / evidence-loss rules terminate it.
+    if (dispatch_ok && mode_ == 'B' &&
+        (disp.type == CommandType::AppLaunch || disp.type == CommandType::AppQuit)) {
+        disp.state = CommandState::Confirming;
+        return ledger_.append_revision(disp);
+    }
 
     // Mode A (spec 5.2.2): dispatch success terminates immediately as
     // unconfirmed/hid_only. `completed` is unreachable without MCA evidence.
@@ -219,6 +239,145 @@ bool CommandEngine::terminate_mode_a(const std::string& command_id, bool ok) {
         term.error_code = "dispatch_error";
     }
     return ledger_.append_revision(term);
+}
+
+size_t CommandEngine::sweep_deadlines() {
+    const uint64_t now = clock_.epoch_seconds();
+    size_t n = 0;
+    std::vector<std::string> ids;
+    for (const CommandRecord* rec : ledger_.list_newest_first()) {
+        if (rec->state == CommandState::Confirming && rec->deadline_at <= now)
+            ids.push_back(rec->command_id);
+    }
+    for (const std::string& id : ids) {
+        const CommandRecord* cur = ledger_.latest(id);
+        if (!cur || cur->state != CommandState::Confirming) continue;
+        CommandRecord next = *cur;
+        next.state = CommandState::TimedOut;
+        next.error_code = "deadline_exceeded";
+        if (ledger_.append_revision(next)) {
+            agent_pred_.erase(id);
+            n++;
+        }
+    }
+    return n;
+}
+
+size_t CommandEngine::on_agent_offline() {
+    size_t n = 0;
+    std::vector<std::string> ids;
+    for (const CommandRecord* rec : ledger_.list_newest_first()) {
+        // Records inside an expected-offline window (sleep/restart/shutdown,
+        // Phase 5) survive channel loss; nothing else does (spec 5.2.1).
+        if (rec->state == CommandState::Confirming && !rec->has_window)
+            ids.push_back(rec->command_id);
+    }
+    for (const std::string& id : ids) {
+        const CommandRecord* cur = ledger_.latest(id);
+        if (!cur || cur->state != CommandState::Confirming) continue;
+        CommandRecord next = *cur;
+        next.state = CommandState::Unconfirmed;
+        next.result = "evidence_lost";
+        if (ledger_.append_revision(next)) {
+            agent_pred_.erase(id);
+            n++;
+        }
+    }
+    return n;
+}
+
+bool CommandEngine::agent_event(const AgentEvent& ev) {
+    if (ev.type != AgentEventType::CommandAck && ev.type != AgentEventType::CommandResult &&
+        ev.type != AgentEventType::ApplicationStarted &&
+        ev.type != AgentEventType::ApplicationExited)
+        return false;
+
+    // Resolve the target record: correlated frames address it by command_id;
+    // ambient app events match the newest confirming record for the bundle.
+    const CommandRecord* rec = nullptr;
+    if ((ev.type == AgentEventType::CommandAck || ev.type == AgentEventType::CommandResult) &&
+        ev.has_command_id) {
+        rec = ledger_.latest(ev.command_id);
+    } else {
+        JsonDocument p;
+        if (deserializeJson(p, ev.payload_json)) return false;
+        const char* bundle = p["bundle_id"].as<const char*>();
+        if (!bundle) return false;
+        for (const CommandRecord* c : ledger_.list_newest_first()) {
+            if (c->state != CommandState::Confirming) continue;
+            if (c->type != CommandType::AppLaunch && c->type != CommandType::AppQuit) continue;
+            JsonDocument cp;
+            if (deserializeJson(cp, c->parameters_json)) continue;
+            std::string want = cp["bundle_id"] | "";
+            if (want == bundle) { rec = c; break; }
+        }
+    }
+    // Soft handling is deliberate: evidence for a record that is not
+    // confirming (e.g. after a timeout) is ignored, never an error (6.1.1).
+    if (!rec || rec->state != CommandState::Confirming) return false;
+    if (rec->type != CommandType::AppLaunch && rec->type != CommandType::AppQuit) return false;
+
+    auto pred = agent_pred_.find(rec->command_id);
+    if (pred == agent_pred_.end()) pred = agent_pred_.emplace(rec->command_id, std::make_pair(false, false)).first;
+    const bool ack_seen = pred->second.first;
+    const bool app_seen = pred->second.second;
+
+    CommandRecord next = *rec;
+    next.evidence.push_back(ev.event_id);
+    const char* result = nullptr;
+
+    switch (ev.type) {
+        case AgentEventType::CommandAck:
+            pred->second.first = true;
+            if (app_seen) {
+                // ack arrived second: the matching application event was seen
+                result = rec->type == CommandType::AppLaunch ? "app_launch_confirmed"
+                                                             : "app_quit_confirmed";
+            }
+            break;
+        case AgentEventType::CommandResult: {
+            JsonDocument p;
+            if (deserializeJson(p, ev.payload_json)) return false;
+            if (strcmp(p["outcome"] | "ok", "failed") == 0) {
+                // MCA-reported failure terminates with the closed error code.
+                next.state = CommandState::Failed;
+                next.error_code = p["error_code"] | "launch_failed";
+            }
+            // outcome ok reports local execution only and MUST NOT complete.
+            break;
+        }
+        case AgentEventType::ApplicationStarted:
+            if (rec->type == CommandType::AppLaunch) {
+                pred->second.second = true;
+                if (ack_seen) result = "app_launch_confirmed";
+            }
+            break;
+        case AgentEventType::ApplicationExited: {
+            JsonDocument p;
+            if (deserializeJson(p, ev.payload_json)) return false;
+            const char* reason = p["reason"] | "";
+            if (rec->type == CommandType::AppQuit) {
+                if (strcmp(reason, "crashed") == 0) {
+                    next.state = CommandState::Failed;
+                    next.error_code = "app_crashed";
+                } else if (strcmp(reason, "quit") == 0 || strcmp(reason, "requested_by_agent") == 0) {
+                    pred->second.second = true;
+                    if (ack_seen) result = "app_quit_confirmed";
+                }
+            }
+            break;
+        }
+        default:
+            return false;
+    }
+
+    if (result) {
+        // command_ack PLUS the matching application event, either order.
+        next.state = CommandState::Completed;
+        next.result = result;
+        agent_pred_.erase(rec->command_id);
+    }
+    return ledger_.append_revision(next);
 }
 
 size_t CommandEngine::reconcile_boot() {

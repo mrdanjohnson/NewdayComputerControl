@@ -74,11 +74,28 @@ void StatusCache::onMacrosChanged() {
     ++cache_epoch_;
 }
 
+void StatusCache::onAgentChanged() {
+    Guard g(mutex_);
+    ++cache_epoch_;
+}
+
+void StatusCache::setAgentStatus(const mcco::AgentStatus& st) {
+    Guard g(mutex_);
+    agent_ = st;
+    ++cache_epoch_;
+}
+
+mcco::AgentStatus StatusCache::snapshotAgent() const {
+    Guard g(mutex_);
+    return agent_;
+}
+
 void StatusCache::buildStatus(JsonDocument& doc) const {
     mcco::Identity id;
     bool usb, net;
     uint64_t probe_at, id_at, now;
     uint32_t epoch;
+    mcco::AgentStatus agent;
     {
         Guard g(mutex_);
         id = identity_;
@@ -87,16 +104,34 @@ void StatusCache::buildStatus(JsonDocument& doc) const {
         probe_at = network_probe_at_;
         id_at = identity_observed_at_;
         epoch = cache_epoch_;
+        agent = agent_;
     }
     now = ctx_->clock->epoch_seconds();
-    mcco::build_status_mode_a(doc, id, usb, net, probe_at, id_at, now, epoch);
+    // Mode B is a property of the PAIRING RECORD (spec 3.3/12.3.1), not of
+    // the current session: a paired endpoint with the agent offline is still
+    // mode B with agent.connected false.
+    bool paired;
+    {
+        Guard g(ctx_->engine_mutex);
+        paired = ctx_->pairing && ctx_->pairing->paired();
+    }
+    mcco::build_status(doc, id, usb, net, probe_at, id_at, paired ? &agent : nullptr, now, epoch);
 }
 
 void StatusCache::buildCapabilities(JsonDocument& doc) const {
     mcco::Identity id;
+    std::vector<std::string> macro_ids;
+    mcco::AgentStatus agent;
     {
         Guard g(mutex_);
         id = identity_;
+        macro_ids = macro_ids_;
+        agent = agent_;
     }
-    mcco::build_capabilities_mode_a(doc, id, macro_ids_);
+    const mcco::AgentStatus* ap;
+    {
+        Guard g(ctx_->engine_mutex);
+        ap = (ctx_->pairing && ctx_->pairing->paired()) ? &agent : nullptr;
+    }
+    mcco::build_capabilities(doc, id, macro_ids, ap, ctx_->clock->epoch_seconds());
 }

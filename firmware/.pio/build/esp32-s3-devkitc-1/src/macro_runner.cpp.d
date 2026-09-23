@@ -71,10 +71,11 @@
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/freertos/include/freertos/list.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/freertos/include/esp_additions/freertos/task_snapshot.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/freertos/include/freertos/task.h \
- lib/maccontrol_core/mc_engine.h lib/maccontrol_core/mc_clock.h \
+ lib/maccontrol_core/mc_engine.h lib/maccontrol_core/mc_agent_events.h \
+ lib/maccontrol_core/mc_types.h lib/maccontrol_core/mc_clock.h \
  lib/maccontrol_core/mc_error.h lib/maccontrol_core/mc_ids.h \
  lib/maccontrol_core/mc_random.h lib/maccontrol_core/mc_ledger.h \
- lib/maccontrol_core/mc_types.h lib/maccontrol_core/mc_log.h \
+ lib/maccontrol_core/mc_log.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Arduino.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp_arduino_version.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal.h \

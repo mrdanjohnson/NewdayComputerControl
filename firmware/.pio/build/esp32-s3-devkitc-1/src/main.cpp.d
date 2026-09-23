@@ -182,25 +182,26 @@
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/LittleFS/src/LittleFS.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/FS/src/FS.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/esp_system/include/esp_task_wdt.h \
- src/app_context.h src/mc_mutex.h src/cli.h src/command_dispatcher.h \
- src/esp_clock.h lib/maccontrol_core/mc_clock.h src/esp_rng.h \
- lib/maccontrol_core/mc_random.h src/fs_ledger_storage.h \
- lib/maccontrol_core/mc_ledger.h lib/maccontrol_core/mc_types.h \
- src/hid_keyboard.h src/http_api.h \
- /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src/WiFiServer.h \
- /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Server.h \
- /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src/WiFiClient.h \
- /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Client.h \
- src/log_sink.h lib/maccontrol_core/mc_log.h \
- lib/maccontrol_core/mc_auth.h lib/maccontrol_core/mc_engine.h \
- lib/maccontrol_core/mc_error.h lib/maccontrol_core/mc_ids.h \
- lib/maccontrol_core/mc_macro.h lib/maccontrol_core/mc_rate_limit.h \
- src/mdns_service.h lib/maccontrol_core/mc_status.h \
  .pio/libdeps/esp32-s3-devkitc-1/ArduinoJson/src/ArduinoJson.h \
  .pio/libdeps/esp32-s3-devkitc-1/ArduinoJson/src/ArduinoJson.hpp \
  .pio/libdeps/esp32-s3-devkitc-1/ArduinoJson/src/ArduinoJson/Configuration.hpp \
- src/nvs_config.h \
- /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
- src/status_cache.h \
+ src/app_context.h src/mc_mutex.h src/agent_link.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/freertos/include/freertos/timers.h \
- src/trigger_store.h src/web_ui.h src/wifi_mgr.h
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src/WiFiClient.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Client.h \
+ lib/maccontrol_core/mc_agent_events.h lib/maccontrol_core/mc_types.h \
+ lib/maccontrol_core/mc_agent_session.h lib/maccontrol_core/mc_clock.h \
+ lib/maccontrol_core/mc_random.h lib/maccontrol_core/mc_error.h \
+ lib/maccontrol_core/mc_status.h src/cli.h src/command_dispatcher.h \
+ src/esp_clock.h src/esp_rng.h src/fs_ledger_storage.h \
+ lib/maccontrol_core/mc_ledger.h src/hid_keyboard.h src/http_api.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src/WiFiServer.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Server.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src/WiFiClient.h \
+ src/log_sink.h lib/maccontrol_core/mc_log.h \
+ lib/maccontrol_core/mc_auth.h lib/maccontrol_core/mc_engine.h \
+ lib/maccontrol_core/mc_ids.h lib/maccontrol_core/mc_macro.h \
+ lib/maccontrol_core/mc_pairing.h lib/maccontrol_core/mc_rate_limit.h \
+ src/mdns_service.h src/nvs_config.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
+ src/status_cache.h src/trigger_store.h src/web_ui.h src/wifi_mgr.h

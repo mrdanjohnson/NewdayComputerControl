@@ -1,7 +1,10 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <esp_task_wdt.h>
+#include <ArduinoJson.h>
+#include <optional>
 #include "app_context.h"
+#include "agent_link.h"
 #include "cli.h"
 #include "command_dispatcher.h"
 #include "esp_clock.h"
@@ -14,6 +17,7 @@
 #include "mc_engine.h"
 #include "mc_log.h"
 #include "mc_macro.h"
+#include "mc_pairing.h"
 #include "mc_rate_limit.h"
 #include "mdns_service.h"
 #include "nvs_config.h"
@@ -36,6 +40,7 @@ mcco::CommandEngine g_engine(g_ledger, g_clock, g_rng, g_log);
 mcco::KeyStore g_keys;
 mcco::RateLimiter g_limiter(g_clock);
 mcco::MacroStore g_macros;
+mcco::PairingStore* g_pairing = nullptr; // constructed in setup (needs device_id)
 TriggerStore g_triggers;
 WebUi g_web_ui;
 HidKeyboard g_hid;
@@ -44,7 +49,31 @@ StatusCache g_status_cache;
 MdnsService g_mdns;
 WifiMgr g_wifi;
 HttpApi g_http;
+AgentLink g_agent_link;
 Cli g_cli;
+
+// Single point of truth for the pairing side effects (spec 3.2): engine mode
+// and the mDNS TXT ride the same pairing_dirty flag the routes set, so no
+// route has to do mDNS or engine work under engine_mutex.
+// Spec 3.3 TXT vocabulary: pair=unpaired|active|revoked.
+static const char* pair_txt(mcco::PairingState s) {
+    switch (s) {
+        case mcco::PairingState::Active: return "active";
+        case mcco::PairingState::Revoked: return "revoked";
+        default: return "unpaired";
+    }
+}
+
+void apply_pairing_mode() {
+    mcco::PairingState st;
+    {
+        Guard g(ctx.engine_mutex);
+        st = g_pairing->state();
+        g_config.persistPairing(*g_pairing);
+    }
+    g_engine.set_mode(st == mcco::PairingState::Active ? 'B' : 'A');
+    g_mdns.setAgentTxt(st == mcco::PairingState::Active ? "B" : "A", pair_txt(st));
+}
 
 } // namespace
 
@@ -93,6 +122,17 @@ void setup() {
     }
     ctx.keys = &g_keys;
     ctx.limiter = &g_limiter;
+
+    // Phase 4: pairing store (spec 3.2). Constructed after the config load
+    // because the record pins the device_id; hydrated from the same
+    // double-slot NVS record machinery as the keys (digest only, never the
+    // raw agent token).
+    g_pairing = new mcco::PairingStore(g_rng, g_clock, g_config.identity().device_id);
+    if (g_config.hydratePairing(*g_pairing)) {
+        g_log.write(mcco::LogCategory::Auth, mcco::LogLevel::Info, "pairing_restored", nullptr,
+                    nullptr, nullptr, nullptr);
+    }
+    ctx.pairing = g_pairing;
 
     // Phase 2: macro store + trigger bindings (spec ch. 10). Loaded before
     // the HTTP surface begins; any skipped corrupt line latches store_corrupt
@@ -153,6 +193,47 @@ void setup() {
         }
         return res;
     });
+    // Phase 4 (spec 5.3.1/11.2.1): pre-ledger gate for agent-dependent
+    // submissions. submit() runs with engine_mutex already held, so the gate
+    // must not lock engine_mutex again — pairing is already covered by the
+    // caller's lock; the session flag is a lock-free atomic and the evidence
+    // snapshot takes only the status-cache mutex (engine -> cache order).
+    g_engine.set_mode(g_pairing->paired() ? 'B' : 'A');
+    g_engine.set_agent_gate([](const mcco::Submission& sub) -> std::optional<mcco::ErrCode> {
+        using mcco::ErrCode;
+        if (sub.type != mcco::CommandType::AppLaunch && sub.type != mcco::CommandType::AppQuit)
+            return std::nullopt;
+        if (!ctx.pairing->paired()) return ErrCode::AgentNotPaired;
+        if (!ctx.agent_link->sessionActive()) return ErrCode::AgentOffline;
+        const mcco::AgentStatus st = ctx.status_cache->snapshotAgent();
+        std::string bundle;
+        {
+            JsonDocument p;
+            if (!deserializeJson(p, sub.parameters_json) && p.is<JsonObjectConst>()) {
+                const char* b = p["bundle_id"].as<const char*>();
+                if (b) bundle = b;
+            }
+        }
+        bool allowlisted = false;
+        for (const auto& ba : st.allowlisted_apps) {
+            if (ba.first == bundle) {
+                allowlisted = true;
+                break;
+            }
+        }
+        if (!allowlisted) return ErrCode::AppNotAllowlisted;
+        const char* action =
+            sub.type == mcco::CommandType::AppLaunch ? "launch_app" : "quit_app";
+        bool enabled = false;
+        for (const std::string& c : st.enabled_commands) {
+            if (c == action) {
+                enabled = true;
+                break;
+            }
+        }
+        if (!enabled) return ErrCode::CommandDisabled;
+        return std::nullopt;
+    });
     char recon_detail[64];
     snprintf(recon_detail, sizeof(recon_detail), "{\"ms\":%u,\"commands\":%u}",
              (unsigned)(millis() - boot_start_ms), (unsigned)g_ledger.command_count());
@@ -184,6 +265,18 @@ void setup() {
         g_log.write(mcco::LogCategory::System, mcco::LogLevel::Error,
                     "hostname_collision_exhausted", nullptr, nullptr, nullptr, nullptr);
     }
+    if (g_pairing->state() != mcco::PairingState::Unpaired) {
+        // TXT reflects the restored pairing record (spec 3.3 vocabulary).
+        g_mdns.setAgentTxt(g_pairing->paired() ? "B" : "A", pair_txt(g_pairing->state()));
+    }
+
+    // Phase 4: MCA evidence channel (spec 4.2/4.3). Owns the mc_agent_ws task
+    // and the 1 s liveness timer.
+    ctx.agent_link = &g_agent_link;
+    if (!g_agent_link.begin(&ctx)) {
+        g_log.write(mcco::LogCategory::System, mcco::LogLevel::Error, "agent_link_init_failed",
+                    nullptr, nullptr, nullptr, nullptr);
+    }
 
     ctx.dispatcher = &g_dispatcher;
     g_dispatcher.begin(&ctx);
@@ -200,26 +293,67 @@ void loop() {
     esp_task_wdt_reset();
     g_cli.poll();
 
-    // Lazily persist key last_used_at mutations (bounds NVS flash wear).
-    if (ctx.keys_dirty.exchange(false)) {
-        g_config.persistKeys(g_keys);
-    }
-    // Lazily persist macro store and trigger mutations (spec 15.1). A
-    // successful write is also what clears the sticky store_corrupt latch.
-    if (ctx.macros_dirty.exchange(false)) {
-        if (g_config.persistMacroLines(g_macros.dump())) {
-            if (ctx.store_corrupt.exchange(false)) {
-                g_log.write(mcco::LogCategory::Config, mcco::LogLevel::Warn,
-                            "macro_store_recovered", nullptr, nullptr, nullptr, nullptr);
+    // Lazily persist key last_used_at mutations. Throttled: every
+    // authenticated request sets keys_dirty, and the std::string built by
+    // persistKeys needs a large contiguous heap block — under AT poll load
+    // an unthrottled drain can hit a fragmented heap and bad_alloc aborts
+    // the firmware (observed on hardware during AT-11). Leaving the flag set
+    // retries on a later pass; a failed persist must not kill the device.
+    static uint32_t last_keys_persist_ms = 0;
+    try {
+        if (ctx.keys_dirty && millis() - last_keys_persist_ms > 5000) {
+            ctx.keys_dirty = false;
+            if (g_config.persistKeys(g_keys)) last_keys_persist_ms = millis();
+            else ctx.keys_dirty = true; // retry later
+        }
+        // Lazily persist macro store and trigger mutations (spec 15.1). A
+        // successful write is also what clears the sticky store_corrupt latch.
+        if (ctx.macros_dirty.exchange(false)) {
+            if (g_config.persistMacroLines(g_macros.dump())) {
+                if (ctx.store_corrupt.exchange(false)) {
+                    g_log.write(mcco::LogCategory::Config, mcco::LogLevel::Warn,
+                                "macro_store_recovered", nullptr, nullptr, nullptr, nullptr);
+                }
+            } else {
+                ctx.macros_dirty = true; // retry on the next pass
             }
-        } else {
-            ctx.macros_dirty = true; // retry on the next pass
         }
+        if (ctx.triggers_dirty.exchange(false)) {
+            if (!g_config.persistTriggerLines(g_triggers.dump())) {
+                ctx.triggers_dirty = true;
+            }
+        }
+        // Pairing state changed (pair/revoke route or CLI): persist the
+        // record, flip the engine mode and update the mDNS TXT.
+        if (ctx.pairing_dirty.exchange(false)) {
+            apply_pairing_mode();
+        }
+    } catch (const std::exception& e) {
+        // OOM-safety net: a failed lazy persist must never abort the
+        // firmware (bad_alloc in a std::string during heap fragmentation).
+        g_log.write(mcco::LogCategory::System, mcco::LogLevel::Error,
+                    "persist_failed", nullptr, nullptr, nullptr, nullptr);
+        (void)e;
+    } catch (...) {
+        g_log.write(mcco::LogCategory::System, mcco::LogLevel::Error,
+                    "persist_failed", nullptr, nullptr, nullptr, nullptr);
     }
-    if (ctx.triggers_dirty.exchange(false)) {
-        if (!g_config.persistTriggerLines(g_triggers.dump())) {
-            ctx.triggers_dirty = true;
-        }
+
+    // Heap watermark telemetry: under AT poll load the device rebooted with
+    // bad_alloc aborts, so track free/largest/minimum to correlate crashes
+    // with the leaking/churning phase (temporary diagnostic).
+    static uint32_t last_heap_log_ms = 0;
+    if (millis() - last_heap_log_ms > 30000) {
+        last_heap_log_ms = millis();
+        std::string detail = std::string("{\"free\":") +
+                             std::to_string(esp_get_free_heap_size()) +
+                             ",\"min\":" + std::to_string(esp_get_minimum_free_heap_size()) +
+                             ",\"largest\":" +
+                             std::to_string(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)) +
+                             "}";
+        g_log.write(mcco::LogCategory::System, mcco::LogLevel::Info, "heap",
+                    nullptr, nullptr, nullptr, detail.c_str());
+        Serial.printf("[heap] %s\n", detail.c_str());  // TEMP diagnostic
     }
     delay(10);
 }

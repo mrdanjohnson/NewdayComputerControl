@@ -4,6 +4,21 @@ Read this first in the new session. It contains everything needed to finish
 Phase 2 without re-deriving context. Project root:
 `/Users/danieljohnson/Public/ESP32-MCA Command Loop Design/`
 
+> **2026-09-22: Phase 4 is COMPLETE — MCA paired & transport verified on the
+> S3.** AT-01–AT-05 regression green, AT-06 green, AT-11 green twice
+> consecutively on the final binary. See `firmware/docs/PHASE4.md` for the
+> full build/verify log: Python MCA at `agent/` (websockets client, launchd,
+> headless-pairable), pairing ceremony (spec 3.2), hand-rolled RFC 6455 WS
+> server on port 80 (`/agent/v1/ws`), polling fallback (`/agent/v1/events` +
+> `/agent/v1/commands/pending`), heartbeat 5/15/30 s, verified app
+> launch/quit (ack + application_started → `completed`), Web UI Pairing tab.
+> Hardware-found fixes: key store moved to LittleFS double-slot (NVS 4 KB
+> ceiling), SNTP timeline jump (pairing window/session liveness now on the
+> monotonic clock), `make_session_id` control-byte bug, mDNS TXT pair=
+> vocabulary, `/api/v1/apps/*` wired to the engine gate.
+> **Next: Phase 5 (verified lifecycle: power-command predicates,
+> expected-offline windows, AT-07–AT-09).**
+>
 > **2026-09-21: Phase 2 is COMPLETE.** ESP32-S3 acceptance passed: AT-01/02
 > all green (real `unconfirmed`/`hid_only`), AT-03/04 all green twice
 > consecutively on the final binary, Web UI browser-checked. See
@@ -113,6 +128,25 @@ python3 -m venv .venv && ./.venv/bin/pip install platformio   # if .venv missing
 
 ## Working conventions learned the hard way (keep respecting these)
 
+- **Intervals on the monotonic clock, epoch for display only** (Phase 4
+  hardware finding): `EspClock::epoch_seconds()` serves a fallback timeline
+  (2025-01-01 + uptime) until SNTP first syncs, then jumps forward — any
+  interval computed across the jump is garbage (it insta-expired pairing
+  windows). Pairing window/session liveness use `IClock::millis()`. The
+  command engine's deadline/coalesce arithmetic is still epoch-based — fine
+  post-sync, flagged as a Phase 5 cleanup.
+- **Heap discipline under poll load** (Phase 4, cost three reboots): never
+  grow fresh `std::string`s in hot paths — one static response buffer serves
+  all HTTP serializations; throttle LittleFS/NVS persistence (≥5 s); never
+  let a lazy persist throw — `loop()` wraps its drains in try/catch. A crash
+  during LittleFS traffic can also silently reformat LittleFS (keys/ledger
+  live there now) while NVS (identity/pairing/Wi-Fi) survives.
+- **Closing the provisioning serial port reboots the S3** (macOS re-asserts
+  DTR/RTS; the CH343 lines drive EN/IO0). The reset lands 1–3 s after close
+  and silently destroys RAM-only state (pairing windows). Hold the port open
+  for a whole scripted session (see `SerialSession` in at06.py).
+- Run AT scripts against the agent venv with `cwd=agent/`
+  (`agent/.venv/bin/python -m maccontrol_agent`).
 - **ArduinoJson 7**: never `doc["x"] | nullptr` (bool-overload trap → null).
   Use `.is<const char*>()` / `.as<T>()`.
 - stdio `fopen` cannot reach LittleFS (ESP32 VFS mount prefixes) — use the
@@ -143,8 +177,16 @@ python3 -m venv .venv && ./.venv/bin/pip install platformio   # if .venv missing
 ## Key files
 
 - `firmware/lib/maccontrol_core/` — pure C++17 spec logic (ledger, engine,
-  macros, RBAC, docs, errors) — host-testable, 85 tests in `firmware/test/native/`
-- `firmware/src/` — Arduino glue; Phase 2 additions: `macro_runner.*`,
-  `trigger_store.*`, `web_ui.*`, `web_ui_page.h`
-- `firmware/scripts/at01_at02.py`, `at03_at04.py` — acceptance runners
-- `firmware/docs/PHASE1.md`, `PHASE2.md` — build/verify guides + bring-up logs
+  macros, RBAC, docs, errors) — host-testable; Phase 4 adds `mc_pairing.*`,
+  `mc_agent_events.*`, `mc_agent_session.*`, `mc_sha1.*`, Mode B builders in
+  `mc_status.*`, engine agent gate/evidence — 114 tests in
+  `firmware/test/native/`
+- `firmware/src/` — Arduino glue; Phase 4 additions: `ws_server.*`,
+  `agent_link.*` (WS task + polling ingress + liveness timer),
+  `nvs_config.*` (hydratePairing/persistPairing + LittleFS key store)
+- `agent/` — MacControlAgent (Python): `maccontrol_agent/` package,
+  `launchd/com.maccontrol.agent.plist`, README
+- `firmware/scripts/at01_at02.py`, `at03_at04.py`, `at05.py`, `at06.py`,
+  `at11.py` — acceptance runners
+- `firmware/docs/PHASE1.md`, `PHASE2.md`, `PHASE3.md`, `PHASE4.md` —
+  build/verify guides + bring-up logs

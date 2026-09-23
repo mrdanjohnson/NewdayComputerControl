@@ -206,4 +206,4 @@
  lib/maccontrol_core/mc_macro.h lib/maccontrol_core/mc_error.h \
  lib/maccontrol_core/mc_random.h src/nvs_config.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
- lib/maccontrol_core/mc_auth.h
+ lib/maccontrol_core/mc_auth.h lib/maccontrol_core/mc_pairing.h

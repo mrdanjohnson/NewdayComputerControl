@@ -23,6 +23,13 @@ public:
     void buildStatus(JsonDocument& doc) const;
     void buildCapabilities(JsonDocument& doc) const;
 
+    // Mode B evidence snapshot (spec ch. 6/7), written only by AgentLink under
+    // engine_mutex-held discipline and read by the builders and the engine's
+    // agent gate. Lock order: engine_mutex -> this mutex (never reversed).
+    void setAgentStatus(const mcco::AgentStatus& st);
+    mcco::AgentStatus snapshotAgent() const;
+    void onAgentChanged(); // bump epoch (evidence freshness, spec 7.1.1)
+
     bool usbUp() const { return usb_up_; }
     bool networkUp() const { return network_up_; }
     uint64_t networkProbeAt() const { return network_probe_at_; }
@@ -40,5 +47,6 @@ private:
     uint32_t cache_epoch_ = 0;
     uint8_t probe_div_ = 0;
     std::vector<std::string> macro_ids_; // refreshed on onMacrosChanged()
+    mcco::AgentStatus agent_;            // Mode B evidence (AgentLink-owned)
     mutable Mutex mutex_;
 };

@@ -299,7 +299,12 @@ bool ConfigStore::setLogSeq(uint32_t seq) {
 
 bool ConfigStore::hydrateKeys(mcco::KeyStore& ks) {
     std::string tmp;
-    if (!readRecord("keys", tmp)) return false; // no persisted keys yet
+    // LittleFS double-slot (spec 15.1) — the NVS blob record caps at ~4 KB,
+    // which the 8-key table outgrows once revoked keys accumulate. Fall back
+    // to the legacy NVS record for devices provisioned before Phase 4.
+    if (!readSlotFile("/kstore.0", "/kstore.1", "keys.cur", prefs_, tmp)) {
+        if (!readRecord("keys", tmp)) return false; // no persisted keys yet
+    }
     JsonDocument doc;
     if (deserializeJson(doc, tmp) || !doc.is<JsonArray>()) return false;
 
@@ -361,6 +366,16 @@ bool ConfigStore::loadAdminPassword(std::string& salt_b64, std::string& hash_b64
     return !salt_b64.empty() && !hash_b64.empty();
 }
 
+bool ConfigStore::persistPairing(const mcco::PairingStore& ps) {
+    return writeRecord("pairing", ps.dump());
+}
+
+bool ConfigStore::hydratePairing(mcco::PairingStore& ps) {
+    std::string tmp;
+    if (!readRecord("pairing", tmp)) return false; // no persisted pairing yet
+    return ps.restore(tmp);
+}
+
 bool ConfigStore::persistKeys(const mcco::KeyStore& ks) {
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
@@ -377,5 +392,5 @@ bool ConfigStore::persistKeys(const mcco::KeyStore& ks) {
     }
     std::string out;
     serializeJson(doc, out);
-    return writeRecord("keys", out);
+    return writeSlotFile("/kstore.0", "/kstore.1", "keys.cur", prefs_, out);
 }

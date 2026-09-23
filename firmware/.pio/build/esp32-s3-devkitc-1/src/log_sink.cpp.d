@@ -184,6 +184,7 @@
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Arduino.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
  lib/maccontrol_core/mc_auth.h lib/maccontrol_core/mc_types.h \
+ lib/maccontrol_core/mc_pairing.h lib/maccontrol_core/mc_random.h \
  lib/maccontrol_core/mc_status.h \
  .pio/libdeps/esp32-s3-devkitc-1/ArduinoJson/src/ArduinoJson.h \
  .pio/libdeps/esp32-s3-devkitc-1/ArduinoJson/src/ArduinoJson.hpp \

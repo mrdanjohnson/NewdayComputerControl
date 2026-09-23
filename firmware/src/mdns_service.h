@@ -14,8 +14,13 @@ public:
     void reannounce(const mcco::Identity& id);
     const std::string& advertisedLabel() const { return label_; }
 
+    // Phase 4 (spec 3.3.1): reflect the pairing/mode state in the TXT record.
+    void setAgentTxt(const char* mode, const char* pair);
+
 private:
     bool startWithLabel(const std::string& label);
     std::string label_;
     std::string device_id_;
+    std::string txt_mode_ = "A";
+    std::string txt_pair_ = "unpaired";
 };

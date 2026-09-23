@@ -141,5 +141,6 @@
  src/log_sink.h lib/maccontrol_core/mc_clock.h \
  lib/maccontrol_core/mc_log.h lib/maccontrol_core/mc_macro.h \
  lib/maccontrol_core/mc_random.h src/macro_runner.h \
- lib/maccontrol_core/mc_engine.h lib/maccontrol_core/mc_ids.h \
- lib/maccontrol_core/mc_ledger.h lib/maccontrol_core/mc_types.h
+ lib/maccontrol_core/mc_engine.h lib/maccontrol_core/mc_agent_events.h \
+ lib/maccontrol_core/mc_types.h lib/maccontrol_core/mc_ids.h \
+ lib/maccontrol_core/mc_ledger.h

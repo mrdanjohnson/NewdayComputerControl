@@ -35,6 +35,10 @@ TEST(Openapi, CoversChapter12Paths) {
         "/api/v1/openapi.json",
         "/api/v1/apps/{bundle_id}/launch",
         "/api/v1/apps/{bundle_id}/quit",
+        "/agent/v1/pair",
+        "/agent/v1/ws",
+        "/agent/v1/events",
+        "/agent/v1/commands/pending",
     };
     for (const std::string& p : required) {
         EXPECT_TRUE(paths[p].is<JsonObject>()) << "missing path " << p;
@@ -55,6 +59,9 @@ TEST(Openapi, CoversAmendmentPaths) {
         "/ui/login",
         "/ui/logout",
         "/ui/password",
+        "/api/v1/pairing",
+        "/api/v1/pairing/window",
+        "/api/v1/pairing/revoke",
         "/",
     };
     for (const std::string& p : amendments) {
@@ -65,6 +72,7 @@ TEST(Openapi, CoversAmendmentPaths) {
     EXPECT_TRUE(desc.find("AMENDMENT") != std::string::npos);
     EXPECT_TRUE(desc.find("/api/v1/triggers") != std::string::npos);
     EXPECT_TRUE(desc.find("/api/v1/keys") != std::string::npos);
+    EXPECT_TRUE(desc.find("/api/v1/pairing") != std::string::npos);
 }
 
 TEST(Openapi, ErrorEnvelopeAndLogEntrySchemas) {
@@ -78,7 +86,7 @@ TEST(Openapi, ErrorEnvelopeAndLogEntrySchemas) {
     // The closed error-code table (spec 12.3.1) is enumerable from the doc.
     JsonArray codes = schemas["Error"]["properties"]["error"]["properties"]["code"]["enum"]
                           .as<JsonArray>();
-    EXPECT_EQ(codes.size(), 13u);
+    EXPECT_EQ(codes.size(), 19u);
 }
 
 TEST(Openapi, LogsParamsPresent) {

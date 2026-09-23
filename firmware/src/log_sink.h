@@ -8,11 +8,16 @@
 
 class ConfigStore;
 
-// In-RAM ring buffer of the last 512 log entries (spec 15.2 schema:
+// In-RAM ring buffer of the last log entries (spec 15.2 schema:
 // {seq,ts,category,event,level,command_id,request_id,session_id:null,actor,
 // detail}). The seq counter is monotonic, 32-bit, persisted in NVS — loaded
 // at boot, re-saved periodically and when dirty. Thread-safe. Retrieval is
 // served by GET /api/v1/logs (Phase 3) via the filtered entries_since().
+//
+// Entries live in fixed-size static slots (BSS, not the heap): 512 heap
+// std::strings were a ~128 KB heap tenant that left only ~30 KB free on the
+// 320 KB S3 and made every later allocation OOM-prone under poll load.
+// Entries that would exceed the slot are stored with an empty detail object.
 class RamLogSink : public mcco::ILog {
 public:
     RamLogSink(ConfigStore& config, mcco::IClock& clock);
@@ -38,14 +43,20 @@ public:
     // (the sink may be constructed before NVS is readable).
     void restoreSeqFromConfig();
 
-    static constexpr size_t kCapacity = 512;
+    // Default capacity is 128 (the spec minimum; 128-2048 is the allowed
+    // range): on the 320 KB S3 every KB of static RAM shrinks the heap
+    // arena, and the ring must leave headroom for Wi-Fi/lwIP under poll
+    // load. Documented ESP32 build default (see PHASE4.md).
+    static constexpr size_t kCapacity = 128;
+    static constexpr size_t kEntryBytes = 224;  // fixed slot size (see above)
 
 private:
     struct Entry {
         uint32_t seq;
         mcco::LogCategory cat;
         mcco::LogLevel level;
-        std::string json;
+        uint16_t len;               // bytes used in json (<= kEntryBytes-1)
+        char json[kEntryBytes];
     };
     void persistSeqIfDue(bool force);
 

@@ -69,9 +69,86 @@
  src/app_context.h src/mc_mutex.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/freertos/include/freertos/semphr.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/freertos/include/freertos/queue.h \
+ .pio/libdeps/esp32-wroom-32/ArduinoJson/src/ArduinoJson.h \
+ .pio/libdeps/esp32-wroom-32/ArduinoJson/src/ArduinoJson.hpp \
+ .pio/libdeps/esp32-wroom-32/ArduinoJson/src/ArduinoJson/Configuration.hpp \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Arduino.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp_arduino_version.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/esp_hw_support/include/esp_sleep.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/hal/include/hal/touch_sensor_types.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/hal/include/hal/gpio_types.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/soc/include/soc/gpio_periph.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/soc/esp32/include/soc/io_mux_reg.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/soc/esp32/include/soc/gpio_struct.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/soc/esp32/include/soc/gpio_reg.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/soc/esp32/include/soc/gpio_sig_map.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/freertos/include/freertos/event_groups.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/freertos/include/freertos/timers.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-log.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/log/include/esp_log.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/log/include/esp_log_internal.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-matrix.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-uart.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/hal/include/hal/uart_types.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-gpio.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/variants/esp32/pins_arduino.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-touch.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-dac.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/driver/include/driver/gpio.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/esp_hw_support/include/esp_intr_alloc.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/esp_common/include/esp_types.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/esp_rom/include/esp32/rom/gpio.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-adc.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-spi.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-i2c.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-ledc.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-rmt.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-sigmadelta.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-timer.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-bt.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-psram.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-rgb-led.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp32-hal-cpu.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/esp8266-compat.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/stdlib_noniso.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/binary.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/WCharacter.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/WString.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/pgmspace.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Stream.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Print.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Printable.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/IPAddress.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/WString.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Printable.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Client.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Server.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Udp.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Stream.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/IPAddress.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/HardwareSerial.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/HWCDC.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/USBCDC.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Esp.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/spi_flash/include/esp_partition.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/spi_flash/include/esp_flash.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/hal/include/hal/spi_flash_types.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/hal/include/hal/esp_flash_err.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/spi_flash/include/esp_spi_flash.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/spi_flash/include/esp_spi_flash_counters.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/esp_hw_support/include/soc/esp32/spiram.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/io_pin_remap.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Arduino.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/esp_system/include/esp_task_wdt.h \
- src/hid_keyboard.h lib/maccontrol_core/mc_types.h src/log_sink.h \
- lib/maccontrol_core/mc_clock.h lib/maccontrol_core/mc_log.h \
- lib/maccontrol_core/mc_engine.h lib/maccontrol_core/mc_error.h \
- lib/maccontrol_core/mc_ids.h lib/maccontrol_core/mc_random.h \
- lib/maccontrol_core/mc_ledger.h src/macro_runner.h
+ src/agent_link.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/freertos/include/freertos/timers.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src/WiFiClient.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Client.h \
+ lib/maccontrol_core/mc_agent_events.h lib/maccontrol_core/mc_types.h \
+ lib/maccontrol_core/mc_agent_session.h lib/maccontrol_core/mc_clock.h \
+ lib/maccontrol_core/mc_random.h lib/maccontrol_core/mc_error.h \
+ lib/maccontrol_core/mc_status.h src/hid_keyboard.h src/log_sink.h \
+ lib/maccontrol_core/mc_log.h lib/maccontrol_core/mc_engine.h \
+ lib/maccontrol_core/mc_ids.h lib/maccontrol_core/mc_ledger.h \
+ src/macro_runner.h

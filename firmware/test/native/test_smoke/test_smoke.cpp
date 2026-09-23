@@ -105,3 +105,84 @@ TEST(Smoke, StatusModeAShape) {
     EXPECT_EQ(std::string(doc["mac"]["state"]["freshness"] | "?"), "unknown");
     EXPECT_EQ(doc["connection"]["network"]["ttl_s"].as<int>(), 30);
 }
+
+TEST(Smoke, StatusModeBProvenanceAndFreshness) {
+    mcco::Identity id{"ProPresenter Mac", "mac-a1b2c3", "", "", "a1b2c3d4e5f6"};
+    mcco::AgentStatus agent;
+    agent.paired = true;
+    agent.session_live = true;
+    agent.last_frame_at = 1736848810;
+    agent.has_system = true;
+    agent.system_state = "awake";
+    agent.system_at = 1736848810;
+    agent.has_lock = true;
+    agent.locked = false;
+    agent.lock_at = 1736848810;
+    agent.has_user = true;
+    agent.user_logged_in = true;
+    agent.user = "production";
+    agent.user_at = 1736848810;
+    agent.has_boot = true;
+    agent.boot_id = "b_3F8A11";
+    agent.boot_at = 1736848810;
+    agent.apps["com.x"] = {true, 812, 1736848810};
+
+    JsonDocument doc;
+    mcco::build_status(doc, id, true, true, 1736848800, 1736848800, &agent,
+                       1736848812, 8);
+    EXPECT_TRUE(doc["connection"]["agent"]["value"].as<bool>());
+    EXPECT_EQ(std::string(doc["mac"]["state"]["value"] | "?"), "awake");
+    EXPECT_EQ(std::string(doc["mac"]["state"]["source"] | "?"), "agent_reported");
+    EXPECT_EQ(std::string(doc["mac"]["state"]["freshness"] | "?"), "fresh");
+    EXPECT_EQ(doc["mac"]["state"]["ttl_s"].as<int>(), 15);
+    // boot_id is retained and never ages (spec 7.2.2).
+    EXPECT_EQ(std::string(doc["mac"]["boot_id"]["freshness"] | "?"), "fresh");
+    EXPECT_EQ(doc["mac"]["boot_id"]["ttl_s"].as<std::string>(), "null");
+    EXPECT_EQ(std::string(doc["applications"]["com.x"]["state"]["value"] | "?"), "running");
+    EXPECT_EQ(doc["applications"]["com.x"]["pid"]["value"].as<int>(), 812);
+
+    // 20 s of silence: agent fields stale, connection.agent still true (value
+    // only flips at the 30 s OFFLINE observation, spec worked example 2).
+    mcco::build_status(doc, id, true, true, 1736848800, 1736848800, &agent,
+                       1736848830, 9);
+    EXPECT_TRUE(doc["connection"]["agent"]["value"].as<bool>());
+    EXPECT_EQ(std::string(doc["mac"]["state"]["freshness"] | "?"), "stale");
+    EXPECT_EQ(std::string(doc["mac"]["state"]["value"] | "?"), "awake"); // never erased
+
+    // 31 s: OFFLINE — connection.agent flips false, agent fields stale.
+    mcco::build_status(doc, id, true, true, 1736848800, 1736848800, &agent,
+                       1736848841, 10);
+    EXPECT_FALSE(doc["connection"]["agent"]["value"].as<bool>());
+}
+
+TEST(Smoke, CapabilitiesModeBHonesty) {
+    mcco::Identity id{"ProPresenter Mac", "mac-a1b2c3", "", "", "a1b2c3d4e5f6"};
+    mcco::AgentStatus agent;
+    agent.paired = true;
+    agent.session_live = true;
+    agent.last_frame_at = 1736848810;
+    agent.has_capability = true;
+    agent.enabled_commands = {"launch_app", "quit_app"};
+    agent.allowlisted_apps = {{"com.x", true}};
+
+    JsonDocument doc;
+    mcco::build_capabilities(doc, id, {"mac_01"}, &agent, 1736848812);
+    EXPECT_EQ(std::string(doc["mode"] | "?"), "B");
+    EXPECT_EQ(std::string(doc["capability_level"] | "?"), "L2");
+    EXPECT_TRUE(doc["agent"]["paired"].as<bool>());
+    EXPECT_TRUE(doc["agent"]["connected"].as<bool>());
+    EXPECT_TRUE(doc["commands"]["app_launch"]["available"].as<bool>());
+    EXPECT_TRUE(doc["commands"]["app_launch"]["verified"].as<bool>());
+    EXPECT_EQ(doc["commands"]["app_launch"]["apps"].as<JsonArrayConst>().size(), 1);
+    // Power/lock predicates are Phase 5: still unverified in Mode B.
+    EXPECT_FALSE(doc["commands"]["lock"]["verified"].as<bool>());
+    EXPECT_FALSE(doc["commands"]["restart"]["verified"].as<bool>());
+
+    // 31 s later (offline): connected collapses, verified collapses with it
+    // (spec 17.1.1 schema constraints).
+    mcco::build_capabilities(doc, id, {"mac_01"}, &agent, 1736848841);
+    EXPECT_FALSE(doc["agent"]["connected"].as<bool>());
+    for (JsonPair kv : doc["commands"].as<JsonObject>()) {
+        EXPECT_FALSE(kv.value()["verified"].as<bool>()) << kv.key().c_str();
+    }
+}

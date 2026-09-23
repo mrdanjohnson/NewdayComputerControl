@@ -108,4 +108,75 @@ std::string make_api_key(IRandom& rng) {
     return std::string("mck_") + base64url_encode(b, sizeof(b));
 }
 
+std::string base64_encode(const uint8_t* data, size_t len) {
+    static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((len + 2) / 3 * 4);
+    size_t i = 0;
+    while (i + 3 <= len) {
+        uint32_t v = (uint32_t(data[i]) << 16) | (uint32_t(data[i + 1]) << 8) | data[i + 2];
+        out += B64[(v >> 18) & 63];
+        out += B64[(v >> 12) & 63];
+        out += B64[(v >> 6) & 63];
+        out += B64[v & 63];
+        i += 3;
+    }
+    if (i < len) {
+        uint32_t v = uint32_t(data[i]) << 16;
+        if (i + 1 < len) v |= uint32_t(data[i + 1]) << 8;
+        out += B64[(v >> 18) & 63];
+        out += B64[(v >> 12) & 63];
+        if (i + 1 < len) out += B64[(v >> 6) & 63];
+        while (out.size() % 4) out += '=';
+    }
+    return out;
+}
+
+std::string hex_encode(const uint8_t* data, size_t len) {
+    static const char* hexd = "0123456789abcdef";
+    std::string out;
+    out.reserve(len * 2);
+    for (size_t i = 0; i < len; i++) {
+        out += hexd[data[i] >> 4];
+        out += hexd[data[i] & 0xf];
+    }
+    return out;
+}
+
+std::string make_pairing_code(IRandom& rng) {
+    // 32 chars: A-Z plus 2-9 (no 0/O/1/I per spec 3.2.1).
+    static const char ALPHABET[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    uint8_t b[8];
+    rng.bytes(b, sizeof(b));
+    std::string out;
+    out.reserve(8);
+    for (int i = 0; i < 8; i++) out += ALPHABET[b[i] & 31];
+    return out;
+}
+
+std::string make_pairing_id(IRandom& rng) {
+    uint8_t b[3];
+    rng.bytes(b, sizeof(b));
+    return std::string("pr-") + hex_encode(b, sizeof(b));
+}
+
+std::string make_session_id(IRandom& rng) {
+    static const char* HEXD = "0123456789ABCDEF";
+    uint8_t b[2];
+    rng.bytes(b, sizeof(b));
+    std::string out = "s_";
+    out.reserve(6);
+    for (int i = 0; i < 2; i++) {
+        out += HEXD[b[i] >> 4];
+        out += HEXD[b[i] & 0xf];
+    }
+    return out;
+}
+
+std::string make_pairing_token(IRandom& rng) {
+    uint8_t b[32];
+    rng.bytes(b, sizeof(b));
+    return base64url_encode(b, sizeof(b));
+}
+
 } // namespace mcco

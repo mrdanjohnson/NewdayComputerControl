@@ -49,6 +49,8 @@ label{display:block;font-size:12px;color:#5c6b7a;margin:8px 0 3px}
 .tabs{display:none}
 .power button{margin:0 6px 6px 0}
 .cmdlink{font-size:12px;margin-left:8px}
+.paircode{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:34px;letter-spacing:.18em;text-align:center;padding:16px 10px;background:#f0f3f7;border:1px solid var(--line);border-radius:6px;margin:10px 0}
+.paircount{text-align:center;font-size:15px;margin:6px 0}
 footer{padding:8px 16px;color:#8a97a5;font-size:11px}
 </style>
 </head>
@@ -70,6 +72,7 @@ footer{padding:8px 16px;color:#8a97a5;font-size:11px}
   <button data-tab="device" onclick="showTab('device')">Device</button>
   <button data-tab="macros" onclick="showTab('macros')">Macros</button>
   <button data-tab="triggers" onclick="showTab('triggers')">Triggers</button>
+  <button data-tab="pairing" onclick="showTab('pairing')">Pairing</button>
   <button data-tab="security" onclick="showTab('security')">Security</button>
   <button data-tab="logs" onclick="showTab('logs')">Logs</button>
 </nav>
@@ -165,6 +168,31 @@ footer{padding:8px 16px;color:#8a97a5;font-size:11px}
     </div>
   </section>
 
+  <section id="tab-pairing" style="display:none">
+    <div class="card"><h2>Pairing state</h2><div id="pairmsg"></div>
+      <div id="pairstatus"></div>
+      <div id="pairmode" class="muted" style="margin-top:6px"></div>
+      <table id="pairrecord" style="margin-top:10px"></table>
+      <p class="muted" style="margin-top:10px">Pairing binds a MacControlAgent instance to this endpoint. The agent token lives on the Mac and is never displayed or requested here.</p>
+    </div>
+    <div class="card" id="pairwindowcard" style="display:none"><h2>Open pairing window</h2>
+      <div class="row">
+        <div><label for="p-duration">Window duration (seconds, 60-600)</label><input id="p-duration" type="number" value="120" min="60" max="600"></div>
+      </div>
+      <div style="margin-top:10px"><button class="act" onclick="openPairingWindow()">Open pairing window</button></div>
+    </div>
+    <div class="card" id="paircodec" style="display:none"><h2>Pairing code</h2>
+      <div id="paircode"></div>
+      <div id="paircount" class="paircount"></div>
+      <p class="muted">Enter this code in the MacControlAgent UI on the Mac (<code>python -m maccontrol_agent --pair-code &lt;code&gt;</code>).</p>
+      <div><button class="sec" onclick="closePairingWindow()">Close window</button></div>
+    </div>
+    <div class="card" id="pairrevokec" style="display:none"><h2>Revoke pairing</h2>
+      <p class="muted">Revoking disconnects the paired agent; it must pair again before this endpoint accepts it.</p>
+      <button class="dgr" onclick="revokePairing()">Revoke pairing</button>
+    </div>
+  </section>
+
   <section id="tab-security" style="display:none">
     <div class="card"><h2>API keys</h2><div id="keymsg"></div>
       <table id="keylist"></table>
@@ -250,10 +278,12 @@ function stateChip(st,result,err){
 }
 function showTab(name){
   document.querySelectorAll('nav button').forEach(function(b){b.classList.toggle('on',b.dataset.tab===name);});
-  ['dash','device','macros','triggers','security','logs'].forEach(function(t){el('tab-'+t).style.display=(t===name)?'':'none';});
+  ['dash','device','macros','triggers','pairing','security','logs'].forEach(function(t){el('tab-'+t).style.display=(t===name)?'':'none';});
   if(name==='dash')refreshDash();
   if(name==='macros')refreshMacros();
   if(name==='triggers')refreshTriggers();
+  if(name==='pairing')loadPairing();
+  else pairingStopTimer();
   if(name==='security')refreshKeys();
   if(name==='logs')refreshLogs(true);
 }
@@ -581,6 +611,116 @@ async function changePassword(){
     el('k-pw').value='';
     el('pwmsg').innerHTML='<div class="ok">Password changed.</div>';
   }catch(e){showErr('pwmsg',e);}
+}
+
+// ---- Pairing tab (spec 14.1): pairing state, one-time code display, window countdown.
+var pairingTimer=null, pairCodeShown=null, pairSecondsLeft=0;
+
+function pairingStopTimer(){if(pairingTimer){clearInterval(pairingTimer);pairingTimer=null;}}
+function pairingEnsureTimer(){if(!pairingTimer)pairingTimer=setInterval(pairingTick,2000);}
+
+function pairStateLabel(st){
+  if(st==='unpaired')return{label:'No agent paired',chip:'unknown'};
+  if(st==='pairing_window')return{label:'Pairing window open',chip:'unverified'};
+  if(st==='active')return{label:'Paired',chip:'verified'};
+  if(st==='revoked')return{label:'Pairing revoked',chip:'off'};
+  return{label:st||'unknown',chip:'unknown'};
+}
+
+async function loadPairing(){
+  pairingStopTimer();
+  el('pairmsg').innerHTML='';
+  var d;
+  try{d=await api('/api/v1/pairing');}
+  catch(e){showErr('pairmsg',e);return;}
+  renderPairing(d);
+  if(d.state==='pairing_window'&&d.window&&d.window.open)pairingEnsureTimer();
+  try{
+    var c=await api('/api/v1/capabilities');
+    var m=(c&&c.mode!=null)?String(c.mode).toLowerCase():'';
+    var paired=(m==='b'||m==='mode_b'||m==='paired'||m==='agent'||m==='agent_paired'||m==='mode b');
+    el('pairmode').textContent=paired?'Mode B (agent paired)':'Mode A (agentless)';
+  }catch(e){el('pairmode').textContent='';}
+}
+
+function renderPairing(d){
+  var st=d.state||'unknown';
+  var sl=pairStateLabel(st);
+  el('pairstatus').innerHTML='<span class="chip '+sl.chip+'">'+esc(sl.label)+'</span>';
+  var r=d.record,rows='';
+  if(r&&st==='active'){
+    rows='<tr><th>pairing_id</th><td>'+esc(r.pairing_id)+'</td></tr>'+
+      '<tr><th>agent_instance_id</th><td>'+esc(r.agent_instance_id)+'</td></tr>'+
+      '<tr><th>device_id</th><td>'+esc(r.device_id)+'</td></tr>'+
+      '<tr><th>created_at</th><td class="muted">'+esc(r.created_at||'')+'</td></tr>'+
+      '<tr><th>last_used_at</th><td class="muted">'+(r.last_used_at?esc(r.last_used_at):'never')+'</td></tr>';
+  }
+  el('pairrecord').innerHTML=rows;
+  var win=d.window||{};
+  var winOpen=(st==='pairing_window')&&!!win.open;
+  el('pairwindowcard').style.display=((st==='unpaired'||st==='revoked')&&!winOpen)?'':'none';
+  el('pairrevokec').style.display=(st==='active')?'':'none';
+  if(winOpen){
+    el('paircodec').style.display='';
+    if(pairCodeShown){
+      el('paircode').innerHTML='<div class="paircode">'+esc(pairCodeShown)+'</div>';
+    }else{
+      el('paircode').innerHTML='<div class="warn">A pairing window is open, but the pairing code is only displayed when the window is opened from this page. Close the window and open a new one to see the code.</div>';
+    }
+    if(typeof win.seconds_remaining==='number')pairSecondsLeft=win.seconds_remaining;
+    renderPairCountdown(win.failed_attempts||0);
+  }else{
+    el('paircodec').style.display='none';
+  }
+}
+
+function renderPairCountdown(failed){
+  var s=Math.max(0,pairSecondsLeft);
+  var txt=(s>=60)?(Math.floor(s/60)+' min '+(s%60)+' s'):(s+' s');
+  var f=(failed>0)?(' <span class="muted">failed attempts: '+failed+'</span>'):'';
+  el('paircount').innerHTML='Window closes in <b>'+txt+'</b>'+f;
+}
+
+async function pairingTick(){
+  try{
+    var d=await api('/api/v1/pairing');
+    if(d.state!=='pairing_window'||!(d.window&&d.window.open)){
+      // Window expired, paired, or closed elsewhere: drop the code and re-render.
+      pairingStopTimer();pairCodeShown=null;renderPairing(d);pairingEnsureTimer();return;
+    }
+    renderPairing(d);
+  }catch(e){
+    // Transient poll failure: count down locally; fall back to a full reload at 0.
+    pairSecondsLeft=Math.max(0,pairSecondsLeft-2);
+    renderPairCountdown(0);
+    if(pairSecondsLeft<=0){pairingStopTimer();loadPairing();}
+  }
+}
+
+async function openPairingWindow(){
+  el('pairmsg').innerHTML='';
+  var dur=parseInt(el('p-duration').value,10);
+  if(isNaN(dur))dur=120;
+  try{
+    var r=await api('/api/v1/pairing/window','POST',{duration_s:dur});
+    pairCodeShown=r.pairing_code||null;
+    loadPairing();
+  }catch(e){showErr('pairmsg',e);}
+}
+async function closePairingWindow(){
+  el('pairmsg').innerHTML='';
+  try{
+    await api('/api/v1/pairing/window','DELETE');
+    pairCodeShown=null;loadPairing();
+  }catch(e){showErr('pairmsg',e);}
+}
+async function revokePairing(){
+  if(!confirm('Revoke pairing? The paired agent loses access and must pair again.'))return;
+  el('pairmsg').innerHTML='';
+  try{
+    await api('/api/v1/pairing/revoke','POST',{});
+    loadPairing();
+  }catch(e){showErr('pairmsg',e);}
 }
 
 // ---- Logs tab (spec 15.2): ascending seq, filter selects, seq-cursor paging.

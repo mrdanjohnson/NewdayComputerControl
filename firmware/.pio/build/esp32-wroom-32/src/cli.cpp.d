@@ -195,17 +195,19 @@
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Udp.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/cbuf.h \
  src/esp_clock.h lib/maccontrol_core/mc_clock.h src/esp_rng.h \
- lib/maccontrol_core/mc_random.h src/log_sink.h \
- lib/maccontrol_core/mc_log.h lib/maccontrol_core/mc_auth.h \
- lib/maccontrol_core/mc_types.h lib/maccontrol_core/mc_engine.h \
- lib/maccontrol_core/mc_error.h lib/maccontrol_core/mc_ids.h \
- lib/maccontrol_core/mc_ledger.h lib/maccontrol_core/mc_iso8601.h \
- src/mdns_service.h lib/maccontrol_core/mc_status.h \
+ lib/maccontrol_core/mc_random.h src/agent_link.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/freertos/include/freertos/timers.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src/WiFiClient.h \
+ lib/maccontrol_core/mc_agent_events.h lib/maccontrol_core/mc_types.h \
+ lib/maccontrol_core/mc_agent_session.h lib/maccontrol_core/mc_error.h \
+ lib/maccontrol_core/mc_status.h \
  .pio/libdeps/esp32-wroom-32/ArduinoJson/src/ArduinoJson.h \
  .pio/libdeps/esp32-wroom-32/ArduinoJson/src/ArduinoJson.hpp \
  .pio/libdeps/esp32-wroom-32/ArduinoJson/src/ArduinoJson/Configuration.hpp \
- src/nvs_config.h \
+ src/log_sink.h lib/maccontrol_core/mc_log.h \
+ lib/maccontrol_core/mc_auth.h lib/maccontrol_core/mc_engine.h \
+ lib/maccontrol_core/mc_ids.h lib/maccontrol_core/mc_ledger.h \
+ lib/maccontrol_core/mc_iso8601.h lib/maccontrol_core/mc_pairing.h \
+ src/mdns_service.h src/nvs_config.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
- src/status_cache.h \
- /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/freertos/include/freertos/timers.h \
- src/web_ui.h src/wifi_mgr.h
+ src/status_cache.h src/web_ui.h src/wifi_mgr.h

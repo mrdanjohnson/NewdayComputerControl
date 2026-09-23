@@ -22,4 +22,24 @@ std::string make_api_key(IRandom& rng);
 std::string base64url_encode(const uint8_t* data, size_t len);
 bool base64url_decode(const std::string& in, uint8_t* out, size_t& out_len);
 
+// Standard base64 (with '=' padding), required by the RFC 6455 handshake.
+std::string base64_encode(const uint8_t* data, size_t len);
+
+// lowercase hex of n bytes.
+std::string hex_encode(const uint8_t* data, size_t len);
+
+// One-time pairing code (spec 3.2.1): 8 chars, alphanumeric excluding the
+// ambiguous glyphs 0/O/1/I.
+std::string make_pairing_code(IRandom& rng);
+
+// "pr-" + 6 lowercase hex (pairing record id, spec 3.2.2).
+std::string make_pairing_id(IRandom& rng);
+
+// "s_" + 4 uppercase hex (server-assigned agent session id, spec 4.2.1).
+std::string make_session_id(IRandom& rng);
+
+// Raw agent pairing token (spec 3.2.2): 32 random bytes, base64url. Returned
+// to the MCA exactly once; only its SHA-256 digest is persisted.
+std::string make_pairing_token(IRandom& rng);
+
 } // namespace mcco

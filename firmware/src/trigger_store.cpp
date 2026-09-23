@@ -89,7 +89,7 @@ bool TriggerStore::begin(AppContext* ctx) {
     gpio_queue_ = xQueueCreate(16, sizeof(GpioEvent));
     if (!gpio_queue_) return false;
     if (xTaskCreate([](void* arg) { static_cast<TriggerStore*>(arg)->taskLoop(); },
-                    "mc_trig", 4096, this, 5, &task_) != pdPASS)
+                    "mc_trig", 3072, this, 5, &task_) != pdPASS)
         return false;
     applyGpio();
     return true;

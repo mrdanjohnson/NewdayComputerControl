@@ -7,6 +7,7 @@
 #include <string.h>
 #include <map>
 #include "command_dispatcher.h"
+#include "agent_link.h"
 #include "esp_clock.h"
 #include "esp_rng.h"
 #include "log_sink.h"
@@ -18,6 +19,7 @@
 #include "mc_ledger.h"
 #include "mc_log.h"
 #include "mc_openapi.h"
+#include "mc_pairing.h"
 #include "mc_rate_limit.h"
 #include "mc_sha256.h"
 #include "mdns_service.h"
@@ -28,12 +30,17 @@
 #include "mc_macro.h"
 #include "web_ui.h"
 #include "wifi_mgr.h"
+#include "ws_server.h"
 
 namespace {
 
 constexpr uint32_t kHeaderCap = 8192;
 constexpr uint32_t kBodyCap = 16384;
 constexpr uint32_t kIoTimeoutMs = 5000;
+// Idle bound between requests on a kept-alive connection: the server is
+// single-threaded, so a long idle hold blocks every other client (an AT
+// harness opening a fresh connection would queue behind it).
+constexpr uint32_t kKeepAliveIdleMs = 3000;
 
 struct Request {
     std::string method;
@@ -43,7 +50,15 @@ struct Request {
     std::string auth;           // raw Authorization header value
     std::string cookie;         // raw Cookie header value
     std::string idempotency_key; // Idempotency-Key header value
+    std::string upgrade;        // raw Upgrade header value (WebSocket detection)
+    std::string ws_key;         // Sec-WebSocket-Key (RFC 6455 handshake)
+    std::string session_hdr;    // X-Session-Id (polling transport)
+    bool keepalive = false;     // Connection: keep-alive (transport reuse)
 };
+
+// Authorization: Bearer <token> extraction; "" when absent/malformed.
+// (trim is defined below; forward use via local copy.)
+std::string bearerToken(const std::string& auth);
 
 const char* reasonPhrase(int status) {
     switch (status) {
@@ -72,6 +87,12 @@ std::string toLower(std::string s) {
     for (auto& c : s)
         if (c >= 'A' && c <= 'Z') c += 32;
     return s;
+}
+
+std::string bearerToken(const std::string& auth) {
+    const std::string prefix = "Bearer ";
+    if (auth.compare(0, prefix.size(), prefix) == 0) return trim(auth.substr(prefix.size()));
+    return "";
 }
 
 char hexVal(char c) {
@@ -168,7 +189,7 @@ void HttpApi::begin(AppContext* ctx, uint16_t port) {
     ctx_ = ctx;
     server_ = new WiFiServer(port);
     server_->begin();
-    xTaskCreate(taskEntry, "mc_http", 12288, this, 5, &task_);
+    xTaskCreate(taskEntry, "mc_http", 10240, this, 5, &task_);
     esp_task_wdt_add(task_);
 }
 
@@ -183,15 +204,42 @@ void HttpApi::taskEntry(void* arg) {
         WiFiClient client = self->server_->accept();
         if (client) {
             client.setNoDelay(true);
-            self->handleClient(client);
-            client.stop();
+            self->ws_handed_off_ = false;
+            self->handleClient(client, kIoTimeoutMs);
+            // Connection reuse (transport churn wedges the lwIP/Wi-Fi stack
+            // under sustained polling): honor keep-alive until the peer
+            // closes, goes silent (per-request read timeout), or upgrades.
+            while (self->last_keepalive_ && !self->ws_handed_off_ && client.connected()) {
+                self->last_keepalive_ = false;
+                self->handleClient(client, kKeepAliveIdleMs);
+            }
+            // An upgraded WebSocket connection now belongs to the agent task
+            // (spec 4.2.1); the HTTP task must not touch it again.
+            if (!self->ws_handed_off_) client.stop();
         } else {
             vTaskDelay(pdMS_TO_TICKS(10));
         }
     }
 }
 
-void HttpApi::handleClient(WiFiClient& client) {
+// WiFiClient::write() can return short counts (full socket buffer); every
+// response path must loop. Single-byte Print writes also silently drop on
+// EAGAIN — never stream JSON through Print.
+static bool writeFully(WiFiClient& client, const char* data, size_t len) {
+    size_t off = 0;
+    while (off < len) {
+        int w = client.write(reinterpret_cast<const uint8_t*>(data + off), len - off);
+        if (w <= 0) {
+            if (!client.connected()) return false;
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
+        off += (size_t)w;
+    }
+    return true;
+}
+
+void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
     AppContext* ctx = ctx_;
     const std::string request_id = mcco::make_request_id(*ctx->rng);
 
@@ -200,7 +248,7 @@ void HttpApi::handleClient(WiFiClient& client) {
     header_block.reserve(1024);
     uint32_t start_ms = (uint32_t)millis();
     while (header_block.find("\r\n\r\n") == std::string::npos) {
-        if (header_block.size() >= kHeaderCap || (uint32_t)millis() - start_ms > kIoTimeoutMs ||
+        if (header_block.size() >= kHeaderCap || (uint32_t)millis() - start_ms > header_timeout_ms ||
             !client.connected()) {
             return; // too large / slow / gone: close silently
         }
@@ -247,11 +295,20 @@ void HttpApi::handleClient(WiFiClient& client) {
                     req.cookie = value;
                 } else if (name == "idempotency-key") {
                     req.idempotency_key = value;
+                } else if (name == "upgrade") {
+                    req.upgrade = value;
+                } else if (name == "sec-websocket-key") {
+                    req.ws_key = value;
+                } else if (name == "x-session-id") {
+                    req.session_hdr = value;
+                } else if (name == "connection") {
+                    req.keepalive = (toLower(value) == "keep-alive");
                 }
             }
             pos = eol + 2;
         }
     }
+    last_keepalive_ = req.keepalive;
     if (content_length > kBodyCap) {
         // Body too large for the fixed parsing buffer: refuse cleanly.
         std::string body = "{\"error\":{\"code\":\"bad_request\",\"message\":\"Request body too "
@@ -261,8 +318,8 @@ void HttpApi::handleClient(WiFiClient& client) {
                            "Content-Length: " +
                            std::to_string(body.size()) +
                            "\r\nConnection: close\r\nX-Request-Id: " + request_id + "\r\n\r\n";
-        client.write(hdrs.data(), hdrs.size());
-        client.write(body.data(), body.size());
+        writeFully(client, hdrs.data(), hdrs.size());
+        writeFully(client, body.data(), body.size());
         return;
     }
     // Any bytes of the body already read past the header terminator.
@@ -280,13 +337,15 @@ void HttpApi::handleClient(WiFiClient& client) {
     }
     req.body.resize(content_length);
 
+    auto connToken = [&]() -> const char* { return req.keepalive ? "keep-alive" : "close"; };
     auto sendRaw = [&](int status, const std::string& body) {
         std::string hdrs = "HTTP/1.1 " + std::to_string(status) + " " + reasonPhrase(status) +
                            "\r\nContent-Type: application/json\r\nContent-Length: " +
                            std::to_string(body.size()) +
-                           "\r\nConnection: close\r\nX-Request-Id: " + request_id + "\r\n\r\n";
-        client.write(hdrs.data(), hdrs.size());
-        client.write(body.data(), body.size());
+                           "\r\nConnection: " + connToken() + "\r\nX-Request-Id: " + request_id +
+                           "\r\n\r\n";
+        writeFully(client, hdrs.data(), hdrs.size());
+        writeFully(client, body.data(), body.size());
         client.flush();
     };
     auto sendError = [&](mcco::ErrCode code, const char* message = nullptr) {
@@ -295,24 +354,45 @@ void HttpApi::handleClient(WiFiClient& client) {
         err["code"] = mcco::error_code_string(code);
         err["message"] = message ? message : mcco::default_error_message(code);
         err["request_id"] = request_id;
+        const size_t len = measureJson(doc);
+        std::string hdrs = "HTTP/1.1 " + std::to_string(mcco::error_http_status(code)) + " " +
+                           reasonPhrase(mcco::error_http_status(code)) +
+                           "\r\nContent-Type: application/json\r\nContent-Length: " +
+                           std::to_string(len) + "\r\nConnection: " + connToken() +
+                           "\r\nX-Request-Id: " + request_id + "\r\n\r\n";
+        writeFully(client, hdrs.data(), hdrs.size());
+        // Exact-size transient buffer: WiFiClient single-byte Print writes
+        // silently drop bytes on a full socket buffer, and a RETAINED
+        // response buffer once suffocated the heap — so neither streaming
+        // Print nor a static buffer; serialize, then write fully.
         std::string body;
+        body.reserve(len + 1);
         serializeJson(doc, body);
-        sendRaw(mcco::error_http_status(code), body);
+        writeFully(client, body.data(), body.size());
+        client.flush();
         ctx->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Warn, "http_error", nullptr,
                         request_id.c_str(), nullptr, nullptr);
     };
     auto sendJson = [&](int status, const JsonDocument& doc) {
+        const size_t len = measureJson(doc);
+        std::string hdrs = "HTTP/1.1 " + std::to_string(status) + " " + reasonPhrase(status) +
+                           "\r\nContent-Type: application/json\r\nContent-Length: " +
+                           std::to_string(len) + "\r\nConnection: " + connToken() +
+                           "\r\nX-Request-Id: " + request_id + "\r\n\r\n";
+        writeFully(client, hdrs.data(), hdrs.size());
         std::string body;
+        body.reserve(len + 1);
         serializeJson(doc, body);
-        sendRaw(status, body);
+        writeFully(client, body.data(), body.size());
+        client.flush();
     };
     auto sendHtml = [&](int status, const char* html) {
         std::string hdrs = "HTTP/1.1 " + std::to_string(status) + " " + reasonPhrase(status) +
                            "\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " +
                            std::to_string(strlen(html)) +
                            "\r\nConnection: close\r\nX-Request-Id: " + request_id + "\r\n\r\n";
-        client.write(hdrs.data(), hdrs.size());
-        client.write(html, strlen(html));
+        writeFully(client, hdrs.data(), hdrs.size());
+        writeFully(client, html, strlen(html));
         client.flush();
     };
 
@@ -357,8 +437,8 @@ void HttpApi::handleClient(WiFiClient& client) {
             token +
             "; Path=/; HttpOnly; Max-Age=28800\r\nConnection: close\r\nX-Request-Id: " +
             request_id + "\r\n\r\n";
-        client.write(hdrs.data(), hdrs.size());
-        client.write("{\"ok\":true}", 11);
+        writeFully(client, hdrs.data(), hdrs.size());
+        writeFully(client, "{\"ok\":true}", 11);
         client.flush();
         return;
     }
@@ -371,8 +451,8 @@ void HttpApi::handleClient(WiFiClient& client) {
             "Set-Cookie: mc_session=; Path=/; HttpOnly; Max-Age=0\r\nConnection: close\r\n"
             "X-Request-Id: " +
             request_id + "\r\n\r\n";
-        client.write(hdrs.data(), hdrs.size());
-        client.write(body, 11);
+        writeFully(client, hdrs.data(), hdrs.size());
+        writeFully(client, body, 11);
         client.flush();
         return;
     }
@@ -404,9 +484,170 @@ void HttpApi::handleClient(WiFiClient& client) {
         return;
     }
 
-    // ---- Agent surface: no pairing exists in Phase 1 (spec 4.3.1).
+    // ---- Agent surface (spec 4.2/4.3): the pairing token is the credential,
+    // not API keys, so this is handled BEFORE the auth-key path.
     if (req.path.compare(0, 10, "/agent/v1/") == 0) {
-        sendError(mcco::ErrCode::Unauthorized);
+        if (!ctx->wifi->connected()) {
+            sendError(mcco::ErrCode::NetworkUnavailable);
+            return;
+        }
+
+        // WebSocket channel (spec 4.2.1).
+        if (req.path == "/agent/v1/ws") {
+            if (req.method != "GET" || toLower(trim(req.upgrade)) != "websocket") {
+                sendError(mcco::ErrCode::BadRequest, "WebSocket upgrade required");
+                return;
+            }
+            if (req.ws_key.empty()) {
+                sendError(mcco::ErrCode::BadRequest, "missing Sec-WebSocket-Key");
+                return;
+            }
+            // Write the 101 BEFORE publishing the client to the agent task:
+            // otherwise the task could read these very bytes as a WS frame.
+            // A queue slot is reserved first so the handoff cannot fail after
+            // the upgrade; if it somehow does, closing is correct (the MCA
+            // treats it as a failed attempt and backs off).
+            if (!ctx->agent_link->canAcceptWs()) {
+                sendError(mcco::ErrCode::InternalError, "agent channel busy");
+                return;
+            }
+            std::string hdrs =
+                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                "Connection: Upgrade\r\nSec-WebSocket-Accept: " +
+                ws::handshake_accept(req.ws_key) + "\r\n\r\n";
+            writeFully(client, hdrs.data(), hdrs.size());
+            client.flush();
+            if (!ctx->agent_link->offerWsClient(client, bearerToken(req.auth))) {
+                client.stop(); // upgraded then rejected: the MCA backs off
+                return;
+            }
+            ws_handed_off_ = true; // caller must not stop the client
+            return;
+        }
+
+        // Pairing ceremony (spec 3.2.2).
+        if (req.path == "/agent/v1/pair") {
+            if (req.method != "POST") {
+                sendError(mcco::ErrCode::NotFound);
+                return;
+            }
+            JsonDocument doc;
+            if (deserializeJson(doc, req.body) || !doc.is<JsonObject>()) {
+                sendError(mcco::ErrCode::ValidationFailed);
+                return;
+            }
+            bool bad_field = false;
+            for (JsonPairConst kv : doc.as<JsonObjectConst>()) {
+                const char* k = kv.key().c_str();
+                if (strcmp(k, "pairing_code") != 0 && strcmp(k, "agent_instance_id") != 0 &&
+                    strcmp(k, "agent_version") != 0)
+                    bad_field = true;
+            }
+            if (bad_field || !doc["pairing_code"].is<const char*>() ||
+                !doc["agent_instance_id"].is<const char*>()) {
+                sendError(mcco::ErrCode::ValidationFailed);
+                return;
+            }
+            const char* code = doc["pairing_code"].as<const char*>();
+            const char* instance = doc["agent_instance_id"].as<const char*>();
+
+            std::string token;
+            bool window_open;
+            {
+                Guard g(ctx->engine_mutex);
+                window_open = ctx->pairing->windowOpen();
+            }
+            if (!window_open) {
+                sendError(mcco::ErrCode::AgentNotPaired);
+                return;
+            }
+            mcco::PairCodeResult vres = mcco::PairCodeResult::NoWindow;
+            {
+                Guard g(ctx->engine_mutex);
+                vres = ctx->pairing->validateCode(code);
+                if (vres == mcco::PairCodeResult::Ok) {
+                    token = ctx->pairing->completePairing(instance);
+                }
+            }
+            if (vres == mcco::PairCodeResult::RateLimited) {
+                sendError(mcco::ErrCode::RateLimited);
+                return;
+            }
+            if (vres == mcco::PairCodeResult::WrongCode) {
+                if (!ctx->pairing->windowOpen()) {
+                    sendError(mcco::ErrCode::AgentNotPaired); // 5th failure closed it
+                } else {
+                    sendError(mcco::ErrCode::Forbidden, "invalid pairing code");
+                }
+                return;
+            }
+            if (vres != mcco::PairCodeResult::Ok || token.empty()) {
+                sendError(mcco::ErrCode::AgentNotPaired);
+                return;
+            }
+            // Persist SYNCHRONOUSLY: the pairing record is security state and
+            // must survive the reboot that follows a serial-port close (the
+            // DTR/RTS landmine can strike within milliseconds of the
+            // ceremony, long before the loop() dirty-drain would flush).
+            {
+                Guard g(ctx->engine_mutex);
+                ctx->config->persistPairing(*ctx->pairing);
+            }
+            ctx->pairing_dirty = true; // loop(): mode flip + mDNS TXT
+            mcco::PairingRecord rec;
+            {
+                Guard g(ctx->engine_mutex);
+                if (const mcco::PairingRecord* r = ctx->pairing->activeRecord()) rec = *r;
+            }
+            JsonDocument resp;
+            resp["pairing_id"] = rec.pairing_id;
+            resp["device_id"] = rec.device_id;
+            resp["agent_instance_id"] = rec.agent_instance_id;
+            resp["agent_token"] = token.c_str();
+            resp["created_at"] = (uint64_t)rec.created_at;
+            resp["state"] = "active";
+            resp["heartbeat_interval_s"] = 5;
+            sendJson(200, resp);
+            ctx->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Info, "pairing_completed",
+                            nullptr, request_id.c_str(), nullptr,
+                            (std::string("{\"pairing_id\":\"") + rec.pairing_id + "\"}")
+                                .c_str());
+            return;
+        }
+
+        // Polling ingress (spec 4.3.1).
+        if (req.path == "/agent/v1/events") {
+            if (req.method != "POST") {
+                sendError(mcco::ErrCode::NotFound);
+                return;
+            }
+            std::string resp_json;
+            mcco::ErrCode err = mcco::ErrCode::InternalError;
+            if (!ctx->agent_link->pollEvent(bearerToken(req.auth), req.session_hdr, req.body,
+                                            resp_json, err)) {
+                sendError(err);
+                return;
+            }
+            sendRaw(200, resp_json);
+            return;
+        }
+        if (req.path == "/agent/v1/commands/pending") {
+            if (req.method != "GET") {
+                sendError(mcco::ErrCode::NotFound);
+                return;
+            }
+            std::string resp_json;
+            mcco::ErrCode err = mcco::ErrCode::InternalError;
+            if (!ctx->agent_link->pollPending(bearerToken(req.auth), req.session_hdr, resp_json,
+                                              err)) {
+                sendError(err);
+                return;
+            }
+            sendRaw(200, resp_json);
+            return;
+        }
+
+        sendError(mcco::ErrCode::NotFound); // closed surface (spec 13.3)
         return;
     }
 
@@ -562,15 +803,26 @@ void HttpApi::handleClient(WiFiClient& client) {
         uint32_t dropped = 0;
         std::vector<std::string> entries =
             ctx->log->entries_since(since, limit, catp, lvlp, &dropped);
-        std::string body = "{\"entries\":[";
+        // Stream to the socket: a 512-entry page is ~130 KB, far too large
+        // to buffer on a constrained heap.
+        size_t total = std::string("{\"entries\":[],\"dropped\":}").size() +
+                       std::to_string(dropped).size();
+        for (size_t i = 0; i < entries.size(); i++) total += entries[i].size() + (i ? 1 : 0);
+        std::string hdrs = "HTTP/1.1 200 " + std::string(reasonPhrase(200)) +
+                           "\r\nContent-Type: application/json\r\nContent-Length: " +
+                           std::to_string(total) + "\r\nConnection: " + connToken() +
+                           "\r\nX-Request-Id: " + request_id + "\r\n\r\n";
+        writeFully(client, hdrs.data(), hdrs.size());
+        writeFully(client, "{\"entries\":[", 12);
         for (size_t i = 0; i < entries.size(); i++) {
-            if (i) body += ",";
-            body += entries[i];
+            if (i) writeFully(client, ",", 1);
+            writeFully(client, entries[i].data(), entries[i].size());
         }
-        body += "],\"dropped\":";
-        body += std::to_string(dropped);
-        body += "}";
-        sendRaw(200, body);
+        writeFully(client, "],\"dropped\":", 12);
+        std::string d = std::to_string(dropped);
+        writeFully(client, d.data(), d.size());
+        writeFully(client, "}", 1);
+        client.flush();
         return;
     }
     if (req.method == "POST" && req.path == "/api/v1/commands") {
@@ -1193,17 +1445,219 @@ void HttpApi::handleClient(WiFiClient& client) {
         return;
     }
 
+    // ---- Pairing administration (spec 3.2). Session-authenticated ADMIN,
+    // same pattern as /api/v1/keys.
+    if (req.path == "/api/v1/pairing" || req.path.compare(0, 17, "/api/v1/pairing/") == 0) {
+        if (!session_auth) {
+            sendError(mcco::ErrCode::Forbidden, "pairing administration requires a Web UI session");
+            return;
+        }
+        const std::string rest = (req.path.size() > 17) ? req.path.substr(17) : "";
+        if (rest.empty() && req.method == "GET") {
+            JsonDocument resp;
+            {
+                Guard g(ctx->engine_mutex);
+                resp["state"] = mcco::pairing_state_to_string(ctx->pairing->state());
+                if (const mcco::PairingRecord* rec = ctx->pairing->activeRecord()) {
+                    JsonObject r = resp["record"].to<JsonObject>();
+                    r["pairing_id"] = rec->pairing_id;
+                    r["device_id"] = rec->device_id;
+                    r["agent_instance_id"] = rec->agent_instance_id;
+                    r["created_at"] = (uint64_t)rec->created_at;
+                    r["last_used_at"] = (uint64_t)rec->last_used_at;
+                    r["state"] = "active";
+                } else {
+                    resp["record"] = nullptr;
+                }
+                JsonObject w = resp["window"].to<JsonObject>();
+                const bool open = ctx->pairing->windowOpen();
+                w["open"] = open;
+                w["seconds_remaining"] = open ? ctx->pairing->windowSecondsRemaining() : 0;
+            }
+            sendJson(200, resp);
+            return;
+        }
+        if (rest == "window" && req.method == "POST") {
+            uint32_t duration_s = mcco::PairingStore::kDefaultWindowS;
+            if (!req.body.empty()) {
+                JsonDocument doc;
+                if (deserializeJson(doc, req.body) || !doc.is<JsonObject>()) {
+                    sendError(mcco::ErrCode::BadRequest);
+                    return;
+                }
+                for (JsonPairConst kv : doc.as<JsonObjectConst>()) {
+                    if (strcmp(kv.key().c_str(), "duration_s") != 0) {
+                        sendError(mcco::ErrCode::BadRequest);
+                        return;
+                    }
+                }
+                if (doc["duration_s"].is<int>()) {
+                    duration_s = (uint32_t)doc["duration_s"].as<int>();
+                } else if (!doc["duration_s"].isNull()) {
+                    sendError(mcco::ErrCode::BadRequest);
+                    return;
+                }
+            }
+            if (duration_s < mcco::PairingStore::kMinWindowS ||
+                duration_s > mcco::PairingStore::kMaxWindowS) {
+                sendError(mcco::ErrCode::BadRequest,
+                          "duration_s must be 60-600 (spec 3.2.1)");
+                return;
+            }
+            JsonDocument resp;
+            {
+                Guard g(ctx->engine_mutex);
+                if (!ctx->pairing->openWindow(duration_s)) {
+                    sendError(mcco::ErrCode::InternalError);
+                    return;
+                }
+                resp["pairing_code"] = ctx->pairing->pairingCode();
+                resp["seconds_remaining"] = ctx->pairing->windowSecondsRemaining();
+            }
+            sendJson(200, resp);
+            return;
+        }
+        if (rest == "window" && req.method == "DELETE") {
+            {
+                Guard g(ctx->engine_mutex);
+                ctx->pairing->closeWindow();
+            }
+            JsonDocument resp;
+            resp["ok"] = true;
+            sendJson(200, resp);
+            return;
+        }
+        if (rest == "revoke" && req.method == "POST") {
+            {
+                Guard g(ctx->engine_mutex);
+                if (!ctx->pairing->revoke()) {
+                    sendError(mcco::ErrCode::AgentNotPaired);
+                    return;
+                }
+            }
+            // Immediate: terminate the live agent session (spec 3.2.2).
+            ctx->agent_link->requestClose((uint16_t)mcco::AgentClose::Unpaired);
+            ctx->pairing_dirty = true; // loop(): persist + mode flip + mDNS TXT
+            const std::string corr = mcco::make_request_id(*ctx->rng);
+            ctx->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Warn, "pairing_revoked",
+                            nullptr, request_id.c_str(), actor.c_str(),
+                            (std::string("{\"correlation_id\":\"") + corr + "\"}").c_str());
+            JsonDocument resp;
+            resp["ok"] = true;
+            sendJson(200, resp);
+            return;
+        }
+        sendError(mcco::ErrCode::NotFound);
+        return;
+    }
+
     // ---- Agent surface (Mode A: honest 409s, no ledger records, spec 12.1.1).
     if (req.method == "GET" && req.path == "/api/v1/agent/status") {
         if (!roleCheck(mcco::Role::Read)) return;
-        sendError(mcco::ErrCode::AgentNotPaired);
+        bool paired;
+        mcco::AgentStatus st;
+        mcco::PairingRecord rec_copy;
+        {
+            Guard g(ctx->engine_mutex);
+            paired = ctx->pairing->paired();
+            if (paired) {
+                st = ctx->status_cache->snapshotAgent();
+                if (const mcco::PairingRecord* rec = ctx->pairing->activeRecord()) rec_copy = *rec;
+            }
+        }
+        if (!paired) {
+            sendError(mcco::ErrCode::AgentNotPaired);
+            return;
+        }
+        // Composite MCA status report (spec 6.3) from the cached evidence
+        // snapshot; absent fields are null, never invented.
+        JsonDocument resp;
+        resp["agent_instance_id"] = rec_copy.agent_instance_id;
+        if (st.has_boot) {
+            resp["boot_id"] = st.boot_id;
+        } else {
+            resp["boot_id"] = nullptr;
+        }
+        resp["reported_at"] = mcco::iso8601_format(ctx->clock->epoch_seconds()).c_str();
+        {
+            std::string sid = ctx->agent_link->sessionId();
+            if (sid.empty()) resp["session_id"] = nullptr;
+            else resp["session_id"] = sid;
+        }
+        resp["session_active"] = ctx->agent_link->sessionActive();
+        if (st.has_system) {
+            resp["system"]["state"] = st.system_state;
+        } else {
+            resp["system"]["state"] = nullptr;
+        }
+        resp["user"]["logged_in"] = st.has_user ? st.user_logged_in : false;
+        if (st.has_user && !st.user.empty()) {
+            resp["user"]["name"] = st.user;
+        } else {
+            resp["user"]["name"] = nullptr;
+        }
+        resp["user"]["screen_locked"] = st.has_lock ? st.locked : false;
+        JsonObject apps = resp["applications"].to<JsonObject>();
+        for (const auto& kv : st.apps) {
+            JsonObject a = apps[kv.first.c_str()].to<JsonObject>();
+            a["running"] = kv.second.running;
+            a["pid"] = (int64_t)kv.second.pid;
+        }
+        sendJson(200, resp);
         return;
     }
     if (req.method == "POST" && req.path.compare(0, 13, "/api/v1/apps/") == 0) {
         if (!roleCheck(mcco::Role::Control)) return;
-        // app_launch/app_quit route through the MCA (Phase 4); rejected
-        // pre-ledger here exactly like the generic submission path.
-        sendError(mcco::ErrCode::AgentNotPaired);
+        // app_launch/app_quit route through the MCA (spec 11.2): expand into
+        // a generic submission; the engine's agent gate produces the
+        // deterministic pre-ledger 409s, the ledger record goes to
+        // `confirming`, and the dispatcher hands the action to the agent.
+        std::string rest = req.path.substr(13);
+        mcco::CommandType type;
+        if (rest.size() > 7 && rest.compare(rest.size() - 7, 7, "/launch") == 0) {
+            type = mcco::CommandType::AppLaunch;
+            rest.resize(rest.size() - 7);
+        } else if (rest.size() > 5 && rest.compare(rest.size() - 5, 5, "/quit") == 0) {
+            type = mcco::CommandType::AppQuit;
+            rest.resize(rest.size() - 5);
+        } else {
+            sendError(mcco::ErrCode::NotFound);
+            return;
+        }
+        const std::string bundle_id = urlDecode(rest);
+        if (bundle_id.empty()) {
+            sendError(mcco::ErrCode::NotFound);
+            return;
+        }
+        JsonDocument pdoc;
+        pdoc["bundle_id"] = bundle_id;
+        std::string params;
+        serializeJson(pdoc, params);
+
+        mcco::Submission sub;
+        sub.type = type;
+        sub.parameters_json = params;
+        sub.requested_by = actor;
+        sub.body_hash = mcco::Sha256::hex_digest(std::string("apps:") + bundle_id);
+
+        mcco::SubmissionOutcome out;
+        {
+            Guard g(ctx->engine_mutex);
+            out = ctx->engine->submit(sub);
+        }
+        if (!out.ok) {
+            sendError(out.error);
+            return;
+        }
+        ctx->log->write(mcco::LogCategory::Command, mcco::LogLevel::Info, "command_accepted",
+                        out.record.command_id.c_str(), request_id.c_str(), actor.c_str(), nullptr);
+        JsonDocument resp;
+        resp["command_id"] = out.record.command_id;
+        resp["state"] = mcco::command_state_to_string(out.record.state);
+        resp["deadline_at"] = mcco::iso8601_format(out.record.deadline_at);
+        resp["record_url"] = "/api/v1/commands/" + out.record.command_id;
+        sendJson(out.http_status, resp);
+        if (out.dispatch_pending) ctx->dispatcher->enqueue(out.record.command_id);
         return;
     }
 

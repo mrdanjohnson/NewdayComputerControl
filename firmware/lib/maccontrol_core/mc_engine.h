@@ -3,8 +3,10 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
+#include "mc_agent_events.h"
 #include "mc_clock.h"
 #include "mc_error.h"
 #include "mc_ids.h"
@@ -50,12 +52,50 @@ public:
 
     // Mode A dispatch completion: appends `dispatched`, then immediately the
     // terminal verdict — `unconfirmed`/`hid_only` on success (never
-    // `completed` in Mode A), `failed`/`dispatch_error` on HID failure.
-    // `deadline_override_s` lets the dispatcher set the authoritative
-    // per-macro deadline (timeout_ms/1000 + 5, spec 10.3.1); 0 keeps the
-    // per-type default.
+    // `completed` without MCA evidence), `failed`/`dispatch_error` on HID
+    // failure. Exception: app_launch/app_quit in Mode B stay `confirming`
+    // after dispatch — the terminal verdict arrives via agent_event() or the
+    // deadline sweep (spec 5.2.1). `deadline_override_s` lets the dispatcher
+    // set the authoritative per-macro deadline (timeout_ms/1000 + 5, spec
+    // 10.3.1); 0 keeps the per-type default.
     bool complete_dispatch(const std::string& command_id, bool dispatch_ok,
                            uint32_t deadline_override_s = 0);
+
+    // ---- Mode B agent commands (spec 5.3.1 app predicates) -------------------
+    // Pre-ledger gate for agent-dependent submissions, wired by the glue in
+    // main.cpp (same hook pattern as set_macro_resolver: the gate reads
+    // pairing/session/capability state and MUST NOT lock engine_mutex —
+    // submit() runs under the caller's lock). Returns nullopt to accept,
+    // or the deterministic pre-ledger 409 to reject (agent_not_paired,
+    // agent_offline, command_disabled, app_not_allowlisted).
+    void set_agent_gate(std::function<std::optional<ErrCode>(const Submission& sub)> g) {
+        agent_gate_ = std::move(g);
+    }
+
+    // Current operating mode pinned onto new records as mode_at_accept
+    // (spec 5.1.1). The glue flips it when the pairing state changes.
+    void set_mode(char m) { mode_ = m; }
+    char mode() const { return mode_; }
+
+    // Correlate one admitted MCA frame with an in-flight agent command.
+    // command_ack/command_result address a record by command_id;
+    // application_started/application_exited match the newest confirming
+    // app_launch/app_quit record on exact bundle_id. The app predicates
+    // complete only on command_ack PLUS the matching application event
+    // (either order); command_result(ok) alone never completes (spec 5.3.1).
+    // Evidence pointing at a record not in `confirming` is ignored, never an
+    // error (spec 6.1.1). Returns true if a ledger record advanced.
+    bool agent_event(const AgentEvent& ev);
+
+    // Terminate confirming records whose deadline has passed
+    // (timed_out/deadline_exceeded, spec 5.2.1). Called periodically by the
+    // glue. Returns the number of records advanced.
+    size_t sweep_deadlines();
+
+    // The evidence channel was lost (30 s of silence / session closed): every
+    // confirming record without an expected-offline window terminates
+    // unconfirmed/evidence_lost (spec 5.2.1). Returns the number advanced.
+    size_t on_agent_offline();
 
     // ---- Macro dispatch pipeline (spec 10.3.1) ------------------------------
     // Macros interpret *after* the `dispatched` revision, unlike power chords
@@ -111,6 +151,7 @@ private:
     IRandom& rng_;
     ILog& log_;
     bool initialized_ = false;
+    char mode_ = 'A'; // flipped by the glue when a pairing becomes active
 
     struct IdemEntry {
         std::string command_id;
@@ -120,6 +161,9 @@ private:
     std::map<std::string, IdemEntry> explicit_keys_;
     std::map<std::string, std::string> hash_by_command_; // derived-coalescing hashes
     std::function<MacroResolution(const std::string&)> macro_resolver_;
+    std::function<std::optional<ErrCode>(const Submission&)> agent_gate_;
+    // app predicate progress per in-flight command: {ack_seen, app_event_seen}
+    std::map<std::string, std::pair<bool, bool>> agent_pred_;
     static constexpr uint64_t kCoalesceWindowS = 60; // spec 5.1.1
 };
 

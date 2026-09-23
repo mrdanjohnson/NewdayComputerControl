@@ -206,5 +206,6 @@
  .pio/libdeps/esp32-wroom-32/ArduinoJson/src/ArduinoJson/Configuration.hpp \
  lib/maccontrol_core/mc_types.h src/nvs_config.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
- lib/maccontrol_core/mc_auth.h src/status_cache.h \
+ lib/maccontrol_core/mc_auth.h lib/maccontrol_core/mc_pairing.h \
+ lib/maccontrol_core/mc_random.h src/status_cache.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/freertos/include/freertos/timers.h

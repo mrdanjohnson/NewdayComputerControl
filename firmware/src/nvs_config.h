@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include "mc_auth.h"
+#include "mc_pairing.h"
 #include "mc_status.h"
 
 // Persistent configuration on ESP32 NVS (spec 15.1): double-slot, CRC32
@@ -46,6 +47,12 @@ public:
     // back.
     bool hydrateKeys(mcco::KeyStore& ks);
     bool persistKeys(const mcco::KeyStore& ks);
+
+    // Pairing record <-> NVS (spec 3.2.2/15.1). The persisted JSON is
+    // mcco::PairingStore::dump(); only the token digest is stored, never the
+    // raw agent token. An open pairing window never survives reboot.
+    bool hydratePairing(mcco::PairingStore& ps);
+    bool persistPairing(const mcco::PairingStore& ps);
 
     // Generates the factory identity: device_id from the eFuse MAC
     // (mcco::hex12), hostname "mac-" + last 6 lowercase hex of the MAC,

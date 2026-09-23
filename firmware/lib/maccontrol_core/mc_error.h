@@ -12,6 +12,12 @@ enum class ErrCode {
     NotFound,
     Conflict,
     AgentNotPaired,
+    AgentOffline,     // 409 agent_offline (spec 12.3.1)
+    CommandDisabled,  // 409 command_disabled (spec 12.3.1)
+    AppNotAllowlisted,// 409 app_not_allowlisted (spec 12.3.1)
+    AppNotRegistered, // 409 app_not_registered (Phase 6 registry, spec 12.3.1)
+    AppControlDisabled, // 409 app_control_disabled (Phase 6, spec 12.3.1)
+    ValidationFailed, // 400 validation_failed (spec 4.3.1 agent envelope)
     MacroInvalidStep, // 400 macro_invalid_step (spec 10.1.1)
     MacroQueueFull,   // 409 macro_queue_full (spec 10.3.1)
     StoreCorrupt,     // 409 store_corrupt (spec 15.1)

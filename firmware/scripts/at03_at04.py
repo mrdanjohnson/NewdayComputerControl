@@ -40,25 +40,7 @@ class Checker:
         print(f"\n=== {title} ===")
 
 
-def http(method, base, path, key=None, body=None, timeout=10):
-    headers = {}
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
-    data = None
-    if body is not None:
-        data = json.dumps(body).encode()
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, json.loads(resp.read().decode() or "{}")
-    except urllib.error.HTTPError as e:
-        try:
-            return e.code, json.loads(e.read().decode() or "{}")
-        except Exception:
-            return e.code, {}
-    except Exception as e:
-        return None, {"transport_error": str(e)}
+from mc_http import http
 
 
 def _ensure_serial():

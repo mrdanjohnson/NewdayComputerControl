@@ -23,7 +23,7 @@ void WifiMgr::begin(AppContext* ctx) {
     std::string host = ctx_->config->identity().hostname;
     if (!host.empty()) WiFi.setHostname(host.c_str());
     WiFi.setSleep(false);
-    xTaskCreate(taskEntry, "mc_wifi", 4096, this, 4, &task_);
+    xTaskCreate(taskEntry, "mc_wifi", 3072, this, 4, &task_);
     esp_task_wdt_add(task_);
 }
 

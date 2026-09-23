@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.maccontrol.agent</string>
+
+  <!-- Adjust INSTALL_DIR to wherever you cloned the agent, e.g. /Users/you/maccontrol/agent -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/CHANGE_ME/maccontrol/agent/.venv/bin/python</string>
+    <string>-m</string>
+    <string>maccontrol_agent</string>
+    <string>--daemon</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/CHANGE_ME/maccontrol/agent</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/CHANGE_ME/.maccontrol/agent.launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/CHANGE_ME/.maccontrol/agent.launchd.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+  </dict>
+</dict>
+</plist>

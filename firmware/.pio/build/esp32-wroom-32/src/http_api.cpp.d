@@ -203,17 +203,19 @@
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/cbuf.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src/WiFiClient.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/esp_system/include/esp_task_wdt.h \
- src/command_dispatcher.h src/esp_clock.h lib/maccontrol_core/mc_clock.h \
- src/esp_rng.h lib/maccontrol_core/mc_random.h src/log_sink.h \
- lib/maccontrol_core/mc_log.h lib/maccontrol_core/mc_auth.h \
- lib/maccontrol_core/mc_types.h lib/maccontrol_core/mc_engine.h \
- lib/maccontrol_core/mc_error.h lib/maccontrol_core/mc_ids.h \
- lib/maccontrol_core/mc_ledger.h lib/maccontrol_core/mc_iso8601.h \
- lib/maccontrol_core/mc_openapi.h lib/maccontrol_core/mc_rate_limit.h \
- lib/maccontrol_core/mc_sha256.h src/mdns_service.h \
- lib/maccontrol_core/mc_status.h src/nvs_config.h \
- /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
- src/status_cache.h \
+ src/command_dispatcher.h src/agent_link.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/freertos/include/freertos/timers.h \
- src/trigger_store.h src/macro_runner.h lib/maccontrol_core/mc_macro.h \
- src/web_ui.h src/wifi_mgr.h
+ lib/maccontrol_core/mc_agent_events.h lib/maccontrol_core/mc_types.h \
+ lib/maccontrol_core/mc_agent_session.h lib/maccontrol_core/mc_clock.h \
+ lib/maccontrol_core/mc_random.h lib/maccontrol_core/mc_error.h \
+ lib/maccontrol_core/mc_status.h src/esp_clock.h src/esp_rng.h \
+ src/log_sink.h lib/maccontrol_core/mc_log.h \
+ lib/maccontrol_core/mc_auth.h lib/maccontrol_core/mc_engine.h \
+ lib/maccontrol_core/mc_ids.h lib/maccontrol_core/mc_ledger.h \
+ lib/maccontrol_core/mc_iso8601.h lib/maccontrol_core/mc_openapi.h \
+ lib/maccontrol_core/mc_pairing.h lib/maccontrol_core/mc_rate_limit.h \
+ lib/maccontrol_core/mc_sha256.h src/mdns_service.h src/nvs_config.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
+ src/status_cache.h src/trigger_store.h src/macro_runner.h \
+ lib/maccontrol_core/mc_macro.h src/web_ui.h src/wifi_mgr.h \
+ src/ws_server.h

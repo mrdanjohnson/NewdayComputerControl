@@ -68,26 +68,7 @@ class Checker:
         print(f"\n=== {title} ===")
 
 
-def http(method, base, path, key=None, body=None, timeout=10):
-    url = base + path
-    headers = {}
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
-    data = None
-    if body is not None:
-        data = json.dumps(body).encode()
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, json.loads(resp.read().decode() or "{}")
-    except urllib.error.HTTPError as e:
-        try:
-            return e.code, json.loads(e.read().decode() or "{}")
-        except Exception:
-            return e.code, {}
-    except Exception as e:
-        return None, {"transport_error": str(e)}
+from mc_http import http
 
 
 def error_code(doc):
@@ -165,8 +146,14 @@ def contract_openapi(checker, base, read_key):
     if "Error" in schemas:
         codes = (schemas["Error"].get("properties", {}).get("error", {})
                  .get("properties", {}).get("code", {}).get("enum") or [])
-        checker.check("error code table lists 13 closed codes", len(codes) == 13,
+        # Closed table: 19 codes implemented through Phase 4 (spec 12.3.1
+        # adds agent_offline/command_disabled/app_not_allowlisted/
+        # app_not_registered/app_control_disabled/validation_failed on top of
+        # the original 13). ota_in_progress arrives with Phase 6 OTA.
+        checker.check("error code table lists 19 closed codes", len(codes) == 19,
                       f"len={len(codes)}")
+        checker.check("ota_in_progress absent until Phase 6",
+                      "ota_in_progress" not in codes, json.dumps(codes))
 
 
 def contract_logs(checker, base, read_key):

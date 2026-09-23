@@ -1,5 +1,6 @@
 #include "log_sink.h"
 #include <stdio.h>
+#include <string.h>
 #include "mc_iso8601.h"
 #include "nvs_config.h"
 
@@ -50,12 +51,37 @@ void RamLogSink::write(mcco::LogCategory cat, mcco::LogLevel level, const char* 
         json += ",\"detail\":";
         json += detail_json ? detail_json : "{}";
         json += "}";
+        if (json.size() >= kEntryBytes) {
+            // Static slots cannot grow: re-emit without the detail payload
+            // (correlation ids and the event name are preserved).
+            json.clear();
+            json += "{\"seq\":";
+            json += std::to_string(next_seq_);
+            json += ",\"ts\":\"";
+            json += ts;
+            json += "\",\"category\":\"";
+            json += mcco::log_category_string(cat);
+            json += "\",\"event\":";
+            json += quoted(event);
+            json += ",\"level\":\"";
+            json += mcco::log_level_string(level);
+            json += "\",\"command_id\":";
+            json += quoted(command_id);
+            json += ",\"request_id\":";
+            json += quoted(request_id);
+            json += ",\"session_id\":null,\"actor\":";
+            json += quoted(actor);
+            json += ",\"detail\":{}}";
+        }
+        // Hard safety clamp: a slot overflow must never corrupt the ring.
+        if (json.size() > kEntryBytes - 1) json.resize(kEntryBytes - 1);
 
         Entry& slot = ring_[(head_ + size_) % kCapacity];
         slot.seq = next_seq_;
         slot.cat = cat;
         slot.level = level;
-        slot.json = std::move(json);
+        slot.len = (uint16_t)json.size();
+        memcpy(slot.json, json.data(), json.size() + 1);
         if (size_ < kCapacity) {
             ++size_;
         } else {
@@ -77,16 +103,14 @@ std::vector<std::string> RamLogSink::entries_since(uint32_t since, size_t limit,
                                                    const mcco::LogLevel* level,
                                                    uint32_t* dropped_out) const {
     Guard g(mutex_);
-    if (dropped_out) {
-        *dropped_out = mcco::log_dropped_count(since, size_ == 0 ? 0 : ring_[head_].seq);
-    }
+    if (dropped_out) *dropped_out = mcco::log_dropped_count(since, size_ == 0 ? 0 : ring_[head_].seq);
     std::vector<std::string> out;
     for (size_t i = 0; i < size_ && out.size() < limit; i++) {
         const Entry& e = ring_[(head_ + i) % kCapacity];
         if (e.seq <= since) continue;
         if (category && e.cat != *category) continue;
         if (level && e.level != *level) continue;
-        out.push_back(e.json);
+        out.emplace_back(e.json, e.len);
     }
     return out;
 }
