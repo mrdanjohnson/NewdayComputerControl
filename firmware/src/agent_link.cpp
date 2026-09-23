@@ -544,7 +544,20 @@ void AgentLink::taskEntry(void* arg) {
                 offer = std::move(self->handoff_q_.front());
                 self->handoff_q_.pop_front();
             }
-            self->runWsSession(offer, buf);
+            try {
+                self->runWsSession(offer, buf);
+            } catch (const std::exception&) {
+                // OOM firewall: an allocation failure inside session handling
+                // must not abort the firmware. The socket dies here; the
+                // liveness timer ages the session out (unannounced-loss path).
+                self->ctx_->log->write(mcco::LogCategory::Session, mcco::LogLevel::Error,
+                                       "agent_session_exception", nullptr, nullptr, nullptr,
+                                       nullptr);
+            } catch (...) {
+                self->ctx_->log->write(mcco::LogCategory::Session, mcco::LogLevel::Error,
+                                       "agent_session_exception", nullptr, nullptr, nullptr,
+                                       nullptr);
+            }
             offer.client.stop();
         }
     }

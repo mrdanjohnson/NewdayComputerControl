@@ -73,6 +73,10 @@ void CommandDispatcher::taskEntry(void* arg) {
         }
         if (!got) continue;
 
+        // OOM firewall: engine/ledger/std::string work below can throw
+        // bad_alloc under heap pressure — that must skip the command, never
+        // reach std::terminate (abort -> reboot).
+        try {
         mcco::CommandType type;
         bool is_macro = false;
         std::string params;
@@ -134,5 +138,12 @@ void CommandDispatcher::taskEntry(void* arg) {
                         ok ? mcco::LogLevel::Info : mcco::LogLevel::Error,
                         ok ? "dispatch" : "dispatch_failed", item.command_id, nullptr, nullptr,
                         nullptr);
+        } catch (const std::exception&) {
+            ctx->log->write(mcco::LogCategory::Command, mcco::LogLevel::Error,
+                            "dispatch_exception", item.command_id, nullptr, nullptr, nullptr);
+        } catch (...) {
+            ctx->log->write(mcco::LogCategory::Command, mcco::LogLevel::Error,
+                            "dispatch_exception", item.command_id, nullptr, nullptr, nullptr);
+        }
     }
 }

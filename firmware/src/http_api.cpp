@@ -37,6 +37,18 @@ namespace {
 constexpr uint32_t kHeaderCap = 8192;
 constexpr uint32_t kBodyCap = 16384;
 constexpr uint32_t kIoTimeoutMs = 5000;
+// Absolute bound for streaming a response body to one client. The task WDT
+// gives the server task 10 s and is only reset in taskEntry BETWEEN requests,
+// never inside a write — a peer that stops draining (or an lwIP TX stall)
+// used to pin the task in writeFully until the WDT panicked and rebooted
+// (observed on hardware: response stalls ~10 s into a large transfer, then a
+// fresh boot erases the RAM log ring and RAM-only state like pairing windows).
+constexpr uint32_t kWriteTimeoutMs = 4000;
+// Master heap watermark for serving a request (see handleClient): below
+// this, refuse allocation-free rather than risk bad_alloc mid-response.
+// Measured steady-state under AT polling: largest ~2.8-4 KB, so 2 KB is the
+// highest watermark that never refuses healthy traffic.
+constexpr size_t kMinLargestFreeBlock = 2048;
 // Idle bound between requests on a kept-alive connection: the server is
 // single-threaded, so a long idle hold blocks every other client (an AT
 // harness opening a fresh connection would queue behind it).
@@ -185,12 +197,118 @@ AuthTrack& trackFor(const char* ip) {
 
 } // namespace
 
+// Set in begin(): lets writeFully log its stall event without threading a
+// context pointer through every response call site.
+static AppContext* g_write_ctx = nullptr;
+
+// ---- JsonDocArena ------------------------------------------------------
+// The block list covers the buffer exactly: one free chunk at first use,
+// split on allocate, merged back on deallocate. Address ordering keeps
+// coalescing O(n) and fragmentation low for ArduinoJson's pool/string
+// allocation pattern.
+
+JsonDocArena::Chunk* JsonDocArena::init() {
+    head_ = reinterpret_cast<Chunk*>(buf_);
+    head_->size = kCapacity - sizeof(Chunk);
+    head_->free = true;
+    head_->next = nullptr;
+    return head_;
+}
+
+JsonDocArena::Chunk* JsonDocArena::split(Chunk* c, size_t size) {
+    // size is the payload to carve off; c keeps the remainder when it can
+    // still hold a header plus the minimum payload.
+    if (c->size >= size + sizeof(Chunk) + kMinPayload) {
+        Chunk* rem = reinterpret_cast<Chunk*>(reinterpret_cast<uint8_t*>(c) + sizeof(Chunk) + size);
+        rem->size = c->size - size - sizeof(Chunk);
+        rem->free = true;
+        rem->next = c->next;
+        c->size = size;
+        c->next = rem;
+    }
+    return c;
+}
+
+void* JsonDocArena::allocate(size_t size) {
+    if (size == 0) return nullptr;
+    size = (size + 7) & ~size_t(7);
+    if (!head_) init();
+    for (Chunk* c = head_; c; c = c->next) {
+        if (c->free && c->size >= size) {
+            split(c, size);
+            c->free = false;
+            return reinterpret_cast<uint8_t*>(c) + sizeof(Chunk);
+        }
+    }
+    return nullptr; // exhausted: the document reports overflowed()
+}
+
+void JsonDocArena::deallocate(void* ptr) {
+    if (!ptr) return;
+    Chunk* c = reinterpret_cast<Chunk*>(reinterpret_cast<uint8_t*>(ptr) - sizeof(Chunk));
+    c->free = true;
+    // Merge with the following block first (single pass, address-ordered).
+    if (c->next && c->next->free) {
+        c->size += sizeof(Chunk) + c->next->size;
+        c->next = c->next->next;
+    }
+    // Merge into the preceding block when possible.
+    Chunk* prev = nullptr;
+    for (Chunk* p = head_; p && p != c; p = p->next) prev = p;
+    if (prev && prev->free) {
+        prev->size += sizeof(Chunk) + c->size;
+        prev->next = c->next;
+    }
+}
+
+void* JsonDocArena::reallocate(void* ptr, size_t new_size) {
+    if (!ptr) return allocate(new_size);
+    Chunk* c = reinterpret_cast<Chunk*>(reinterpret_cast<uint8_t*>(ptr) - sizeof(Chunk));
+    if (new_size <= c->size) {
+        split(c, (new_size + 7) & ~size_t(7));
+        c->free = false;
+        return ptr;
+    }
+    // Grow in place when the adjacent block is free and large enough.
+    if (c->next && c->next->free &&
+        c->size + sizeof(Chunk) + c->next->size >= new_size) {
+        c->size += sizeof(Chunk) + c->next->size;
+        c->next = c->next->next;
+        split(c, (new_size + 7) & ~size_t(7));
+        c->free = false;
+        return ptr;
+    }
+    void* fresh = allocate(new_size);
+    if (!fresh) return nullptr;
+    memcpy(fresh, ptr, c->size < new_size ? c->size : new_size);
+    deallocate(ptr);
+    return fresh;
+}
+
 void HttpApi::begin(AppContext* ctx, uint16_t port) {
     ctx_ = ctx;
+    g_write_ctx = ctx;
     server_ = new WiFiServer(port);
     server_->begin();
     xTaskCreate(taskEntry, "mc_http", 10240, this, 5, &task_);
     esp_task_wdt_add(task_);
+}
+
+// OOM firewall: a request handler that cannot allocate must never reach
+// std::terminate (abort -> reboot -> RAM state lost). Answer with a
+// pre-built, allocation-free 500 and drop the connection.
+static void sendOomAndClose(WiFiClient& client) {
+    static const char kBody[] =
+        "{\"error\":{\"code\":\"internal_error\",\"message\":\"out of memory\"}}";
+    char hdr[160];
+    const int hl = snprintf(hdr, sizeof(hdr),
+                            "HTTP/1.1 500 Internal Server Error\r\n"
+                            "Content-Type: application/json\r\n"
+                            "Content-Length: %u\r\nConnection: close\r\n\r\n",
+                            (unsigned)strlen(kBody));
+    client.write(reinterpret_cast<const uint8_t*>(hdr), hl);
+    client.write(reinterpret_cast<const uint8_t*>(kBody), strlen(kBody));
+    client.stop();
 }
 
 void HttpApi::taskEntry(void* arg) {
@@ -201,17 +319,39 @@ void HttpApi::taskEntry(void* arg) {
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
-        WiFiClient client = self->server_->accept();
+        WiFiClient client;
+        if (self->preempt_client_) {
+            // Fairness preemption: a keep-alive idle wait yielded to a client
+            // waiting in the accept backlog (see handleClient).
+            client = self->preempt_client_;
+            self->preempt_client_ = WiFiClient();
+        } else {
+            client = self->server_->accept();
+        }
         if (client) {
             client.setNoDelay(true);
             self->ws_handed_off_ = false;
-            self->handleClient(client, kIoTimeoutMs);
-            // Connection reuse (transport churn wedges the lwIP/Wi-Fi stack
-            // under sustained polling): honor keep-alive until the peer
-            // closes, goes silent (per-request read timeout), or upgrades.
-            while (self->last_keepalive_ && !self->ws_handed_off_ && client.connected()) {
+            try {
+                self->handleClient(client, kIoTimeoutMs);
+                // Connection reuse (transport churn wedges the lwIP/Wi-Fi
+                // stack under sustained polling): honor keep-alive until the
+                // peer closes, goes silent (per-request read timeout),
+                // upgrades, or a backlog client needs the server (preemption).
+                while (self->last_keepalive_ && !self->ws_handed_off_ &&
+                       client.connected()) {
+                    esp_task_wdt_reset();
+                    self->last_keepalive_ = false;
+                    self->handleClient(client, kKeepAliveIdleMs);
+                    if (self->preempt_client_) break;
+                }
+            } catch (const std::exception&) {
+                sendOomAndClose(client);
                 self->last_keepalive_ = false;
-                self->handleClient(client, kKeepAliveIdleMs);
+                self->preempt_client_ = WiFiClient();
+            } catch (...) {
+                sendOomAndClose(client);
+                self->last_keepalive_ = false;
+                self->preempt_client_ = WiFiClient();
             }
             // An upgraded WebSocket connection now belongs to the agent task
             // (spec 4.2.1); the HTTP task must not touch it again.
@@ -224,13 +364,28 @@ void HttpApi::taskEntry(void* arg) {
 
 // WiFiClient::write() can return short counts (full socket buffer); every
 // response path must loop. Single-byte Print writes also silently drop on
-// EAGAIN — never stream JSON through Print.
+// EAGAIN — never stream JSON through Print. Hard overall deadline (see
+// kWriteTimeoutMs): on timeout, log the stall and drop the client so the
+// server task never approaches the task-WDT limit.
 static bool writeFully(WiFiClient& client, const char* data, size_t len) {
+    const int32_t deadline = (int32_t)(millis() + kWriteTimeoutMs);
     size_t off = 0;
     while (off < len) {
         int w = client.write(reinterpret_cast<const uint8_t*>(data + off), len - off);
         if (w <= 0) {
             if (!client.connected()) return false;
+            if ((int32_t)(millis() - deadline) > 0) {
+                char detail[48];
+                snprintf(detail, sizeof(detail), "{\"off\":%u,\"len\":%u}", (unsigned)off,
+                         (unsigned)len);
+                if (g_write_ctx) {
+                    g_write_ctx->log->write(mcco::LogCategory::System, mcco::LogLevel::Error,
+                                            "write_timeout", nullptr, nullptr, nullptr, detail);
+                }
+                client.stop();
+                return false;
+            }
+            esp_task_wdt_reset(); // a stalled peer must not starve the WDT
             vTaskDelay(pdMS_TO_TICKS(1));
             continue;
         }
@@ -241,12 +396,30 @@ static bool writeFully(WiFiClient& client, const char* data, size_t len) {
 
 void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
     AppContext* ctx = ctx_;
+    // Feed here as well: this task's watchdog is otherwise only reset in
+    // taskEntry, and a single handleClient call chain (header read + body
+    // read + response write) must stay under the WDT window — each phase is
+    // independently bounded (kIoTimeoutMs / kWriteTimeoutMs), so feeding per
+    // request cannot mask a genuine hang.
+    esp_task_wdt_reset();
+    // Master heap guard: below this watermark the per-request std::string
+    // growth below cannot be served. Refusing cheaply (allocation-free) beats
+    // throwing bad_alloc mid-response — and a throw while another exception
+    // unwinds terminates the firmware regardless of any catch (decoded from a
+    // panic backtrace: string::reserve bad_alloc during unwind). Clients
+    // retry; the firmware stays up.
+    if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < kMinLargestFreeBlock) {
+        sendOomAndClose(client);
+        return;
+    }
     const std::string request_id = mcco::make_request_id(*ctx->rng);
 
-    // ---- Read headers (up to the blank line).
-    std::string header_block;
-    header_block.reserve(1024);
+    // ---- Read headers (up to the blank line). header_block_ is a reused
+    // member (clear keeps capacity): the per-request reserve churned the heap.
+    header_block_.clear();
+    std::string& header_block = header_block_;
     uint32_t start_ms = (uint32_t)millis();
+    uint32_t last_backlog_peek_ms = 0;
     while (header_block.find("\r\n\r\n") == std::string::npos) {
         if (header_block.size() >= kHeaderCap || (uint32_t)millis() - start_ms > header_timeout_ms ||
             !client.connected()) {
@@ -258,7 +431,27 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
             header_block += (char)ch;
             if (header_block.size() >= kHeaderCap) break;
         }
-        if (header_block.find("\r\n\r\n") == std::string::npos) vTaskDelay(pdMS_TO_TICKS(2));
+        if (header_block.find("\r\n\r\n") == std::string::npos) {
+            // Fairness: a keep-alive connection sitting in its idle wait
+            // holds the single-threaded server for up to kKeepAliveIdleMs
+            // after every request, so a poller re-requesting faster than the
+            // idle bound starves the accept backlog indefinitely — observed
+            // on hardware: at06's 1 Hz capabilities polling blocked the MCA
+            // WebSocket handshake for the whole 90 s connect window (every
+            // daemon attempt died on hello_ack timeout). Peek the backlog
+            // ~10x/s while idle and yield to a waiting client.
+            if (header_timeout_ms == kKeepAliveIdleMs && header_block.empty() && server_ &&
+                (uint32_t)millis() - last_backlog_peek_ms >= 100) {
+                last_backlog_peek_ms = (uint32_t)millis();
+                WiFiClient pending = server_->accept();
+                if (pending) {
+                    preempt_client_ = pending;
+                    return;
+                }
+            }
+            esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
     }
 
     Request req;
@@ -309,16 +502,26 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
         }
     }
     last_keepalive_ = req.keepalive;
+    auto connToken = [&]() -> const char* { return req.keepalive ? "keep-alive" : "close"; };
+    // Status line + headers into the reused member buffer (byte-identical to
+    // the old concatenation: status, Content-Type, Content-Length, Connection,
+    // X-Request-Id, blank line).
+    auto writeHdrs = [&](int status, const char* content_type, size_t body_len,
+                         const char* conn) {
+        const int hl = snprintf(hdr_buf_, sizeof(hdr_buf_),
+                                "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %u\r\n"
+                                "Connection: %s\r\nX-Request-Id: %s\r\n\r\n",
+                                status, reasonPhrase(status), content_type, (unsigned)body_len,
+                                conn, request_id.c_str());
+        writeFully(client, hdr_buf_, (size_t)hl < sizeof(hdr_buf_) ? (size_t)hl
+                                                                   : sizeof(hdr_buf_) - 1);
+    };
     if (content_length > kBodyCap) {
         // Body too large for the fixed parsing buffer: refuse cleanly.
         std::string body = "{\"error\":{\"code\":\"bad_request\",\"message\":\"Request body too "
                            "large\",\"request_id\":\"" +
                            request_id + "\"}}";
-        std::string hdrs = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n"
-                           "Content-Length: " +
-                           std::to_string(body.size()) +
-                           "\r\nConnection: close\r\nX-Request-Id: " + request_id + "\r\n\r\n";
-        writeFully(client, hdrs.data(), hdrs.size());
+        writeHdrs(400, "application/json", body.size(), "close");
         writeFully(client, body.data(), body.size());
         return;
     }
@@ -333,18 +536,15 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
             if (ch < 0) break;
             req.body += (char)ch;
         }
-        if (req.body.size() < content_length) vTaskDelay(pdMS_TO_TICKS(2));
+        if (req.body.size() < content_length) {
+            esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
     }
     req.body.resize(content_length);
 
-    auto connToken = [&]() -> const char* { return req.keepalive ? "keep-alive" : "close"; };
     auto sendRaw = [&](int status, const std::string& body) {
-        std::string hdrs = "HTTP/1.1 " + std::to_string(status) + " " + reasonPhrase(status) +
-                           "\r\nContent-Type: application/json\r\nContent-Length: " +
-                           std::to_string(body.size()) +
-                           "\r\nConnection: " + connToken() + "\r\nX-Request-Id: " + request_id +
-                           "\r\n\r\n";
-        writeFully(client, hdrs.data(), hdrs.size());
+        writeHdrs(status, "application/json", body.size(), connToken());
         writeFully(client, body.data(), body.size());
         client.flush();
     };
@@ -355,12 +555,7 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
         err["message"] = message ? message : mcco::default_error_message(code);
         err["request_id"] = request_id;
         const size_t len = measureJson(doc);
-        std::string hdrs = "HTTP/1.1 " + std::to_string(mcco::error_http_status(code)) + " " +
-                           reasonPhrase(mcco::error_http_status(code)) +
-                           "\r\nContent-Type: application/json\r\nContent-Length: " +
-                           std::to_string(len) + "\r\nConnection: " + connToken() +
-                           "\r\nX-Request-Id: " + request_id + "\r\n\r\n";
-        writeFully(client, hdrs.data(), hdrs.size());
+        writeHdrs(mcco::error_http_status(code), "application/json", len, connToken());
         // Exact-size transient buffer: WiFiClient single-byte Print writes
         // silently drop bytes on a full socket buffer, and a RETAINED
         // response buffer once suffocated the heap — so neither streaming
@@ -375,23 +570,28 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
     };
     auto sendJson = [&](int status, const JsonDocument& doc) {
         const size_t len = measureJson(doc);
-        std::string hdrs = "HTTP/1.1 " + std::to_string(status) + " " + reasonPhrase(status) +
-                           "\r\nContent-Type: application/json\r\nContent-Length: " +
-                           std::to_string(len) + "\r\nConnection: " + connToken() +
-                           "\r\nX-Request-Id: " + request_id + "\r\n\r\n";
-        writeFully(client, hdrs.data(), hdrs.size());
-        std::string body;
-        body.reserve(len + 1);
-        serializeJson(doc, body);
-        writeFully(client, body.data(), body.size());
+        // Heap pre-check BEFORE headers go out: the fallback heap path below
+        // must never throw bad_alloc after a 200 header is on the wire.
+        if (len >= sizeof(json_scratch_) &&
+            heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < len + 512) {
+            sendOomAndClose(client);
+            return;
+        }
+        writeHdrs(status, "application/json", len, connToken());
+        if (len < sizeof(json_scratch_)) {
+            // Static fast path: no per-request heap allocation.
+            serializeJson(doc, json_scratch_, sizeof(json_scratch_));
+            writeFully(client, json_scratch_, len);
+        } else {
+            std::string body;
+            body.reserve(len + 1);
+            serializeJson(doc, body);
+            writeFully(client, body.data(), body.size());
+        }
         client.flush();
     };
     auto sendHtml = [&](int status, const char* html) {
-        std::string hdrs = "HTTP/1.1 " + std::to_string(status) + " " + reasonPhrase(status) +
-                           "\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " +
-                           std::to_string(strlen(html)) +
-                           "\r\nConnection: close\r\nX-Request-Id: " + request_id + "\r\n\r\n";
-        writeFully(client, hdrs.data(), hdrs.size());
+        writeHdrs(status, "text/html; charset=utf-8", strlen(html), "close");
         writeFully(client, html, strlen(html));
         client.flush();
     };
@@ -733,9 +933,10 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
             return;
         }
 
-        // Mark key use (attribution, spec 13.1.1). Persisted lazily by main loop.
-        ctx->keys->touch(principal.key_id, ctx->clock->epoch_seconds());
-        ctx->keys_dirty = true;
+        // Mark key use (attribution, spec 13.1.1), quantized to 60 s inside
+        // touch(): only a real change dirties the store for the lazy persist.
+        if (ctx->keys->touch(principal.key_id, ctx->clock->epoch_seconds()))
+            ctx->keys_dirty = true;
     }
 
     const std::string actor = session_auth ? "webui" : "apikey:" + principal.key_id;
@@ -750,16 +951,31 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
     // ---- Routing (closed surface; everything else 404 not_found).
     if (req.method == "GET" && req.path == "/api/v1/status") {
         if (!roleCheck(mcco::Role::Read)) return;
-        JsonDocument doc;
-        ctx->status_cache->buildStatus(doc);
-        sendJson(200, doc);
+        status_doc_.clear(); // arena is recycled, not reallocated
+        ctx->status_cache->buildStatus(status_doc_);
+        if (status_doc_.overflowed()) {
+            // The static arena cannot hold pathological evidence volume
+            // (many reported apps): fall back to a one-off heap document so
+            // the response is never truncated.
+            JsonDocument doc;
+            ctx->status_cache->buildStatus(doc);
+            sendJson(200, doc);
+            return;
+        }
+        sendJson(200, status_doc_);
         return;
     }
     if (req.method == "GET" && req.path == "/api/v1/capabilities") {
         if (!roleCheck(mcco::Role::Read)) return;
-        JsonDocument doc;
-        ctx->status_cache->buildCapabilities(doc);
-        sendJson(200, doc);
+        caps_doc_.clear();
+        ctx->status_cache->buildCapabilities(caps_doc_);
+        if (caps_doc_.overflowed()) {
+            JsonDocument doc;
+            ctx->status_cache->buildCapabilities(doc);
+            sendJson(200, doc);
+            return;
+        }
+        sendJson(200, caps_doc_);
         return;
     }
     if (req.method == "GET" && req.path == "/api/v1/openapi.json") {
@@ -801,6 +1017,19 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
             if (limit > 512) limit = 512; // spec 15.2 maximum
         }
         uint32_t dropped = 0;
+        // Heap-aware page sizing: entries_since builds a std::vector<std::string>
+        // (~200-250 B per serialized entry transiently). Serve a partial page
+        // that provably fits rather than refuse (or worse, throw bad_alloc
+        // mid-build) — spec 15.2 pages are client-hint limits, not minimums.
+        {
+            const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+            if (largest < 2500) { // even one entry cannot be built safely
+                sendOomAndClose(client);
+                return;
+            }
+            const size_t afford = (largest - 2048) / 256;
+            if (afford < limit) limit = afford < 1 ? 1 : afford;
+        }
         std::vector<std::string> entries =
             ctx->log->entries_since(since, limit, catp, lvlp, &dropped);
         // Stream to the socket: a 512-entry page is ~130 KB, far too large
@@ -808,11 +1037,7 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
         size_t total = std::string("{\"entries\":[],\"dropped\":}").size() +
                        std::to_string(dropped).size();
         for (size_t i = 0; i < entries.size(); i++) total += entries[i].size() + (i ? 1 : 0);
-        std::string hdrs = "HTTP/1.1 200 " + std::string(reasonPhrase(200)) +
-                           "\r\nContent-Type: application/json\r\nContent-Length: " +
-                           std::to_string(total) + "\r\nConnection: " + connToken() +
-                           "\r\nX-Request-Id: " + request_id + "\r\n\r\n";
-        writeFully(client, hdrs.data(), hdrs.size());
+        writeHdrs(200, "application/json", total, connToken());
         writeFully(client, "{\"entries\":[", 12);
         for (size_t i = 0; i < entries.size(); i++) {
             if (i) writeFully(client, ",", 1);

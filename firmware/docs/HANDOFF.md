@@ -4,20 +4,44 @@ Read this first in the new session. It contains everything needed to finish
 Phase 2 without re-deriving context. Project root:
 `/Users/danieljohnson/Public/ESP32-MCA Command Loop Design/`
 
-> **2026-09-22: Phase 4 is COMPLETE — MCA paired & transport verified on the
-> S3.** AT-01–AT-05 regression green, AT-06 green, AT-11 green twice
-> consecutively on the final binary. See `firmware/docs/PHASE4.md` for the
-> full build/verify log: Python MCA at `agent/` (websockets client, launchd,
-> headless-pairable), pairing ceremony (spec 3.2), hand-rolled RFC 6455 WS
-> server on port 80 (`/agent/v1/ws`), polling fallback (`/agent/v1/events` +
-> `/agent/v1/commands/pending`), heartbeat 5/15/30 s, verified app
-> launch/quit (ack + application_started → `completed`), Web UI Pairing tab.
-> Hardware-found fixes: key store moved to LittleFS double-slot (NVS 4 KB
-> ceiling), SNTP timeline jump (pairing window/session liveness now on the
-> monotonic clock), `make_session_id` control-byte bug, mDNS TXT pair=
-> vocabulary, `/api/v1/apps/*` wired to the engine gate.
+> **2026-09-23: Phase 4 GATE PASSED — the "degrading bench" was firmware.**
+> AT-06 all green + AT-11 all green **twice consecutively on one boot**.
+> The device-drops-off-WiFi-in-minutes symptom was per-request heap
+> retention (~400 B/request in the binary Wi-Fi stack) plus ~90 KB of
+> in-RAM ledger revisions, collapsing the largest free block until lwIP
+> couldn't allocate TX buffers. Fixes: ledger latest-revision-only RAM
+> (flash history unchanged), static 3 KB arenas for the reusable status/
+> capabilities JsonDocuments, per-request churn cut (reused header block,
+> snprintf'd headers), 60 s key-touch quantization. Steady-state heap went
+> 6.8–16.7 KB → 109 KB free / 90 KB largest. AT-11 Phase-A timing also
+> needed three anchor fixes: firmware freshness is now agent-silence-based
+> (spec 4.2.2), the at11.py silence clock anchors on the heartbeat
+> interval (never on `mac.state.observed_at` — it tracks state changes),
+> and the MCA anchors its first heartbeat to the initial burst. Full
+> forensics: `firmware/docs/DEBUG-PHASE4-AT11.md`.
 > **Next: Phase 5 (verified lifecycle: power-command predicates,
 > expected-offline windows, AT-07–AT-09).**
+>
+> **2026-09-22 (late): the earlier "Phase 4 COMPLETE" claim below is NOT
+> verified.** A debug session re-derived the AT-06/AT-11 instability from
+> scratch: four firmware root causes found and fixed with decoded
+> backtraces (HTTP-task WDT starvation under busy keep-alive; unbounded
+> socket writes; keep-alive head-of-line blocking starving the accept
+> backlog; uncaught `bad_alloc` in `sendJson` → abort), plus
+> `esp_reset_reason()` now logged at boot so every reboot is classifiable.
+> AT-06 ran fully green on the fixed binary; AT-11's transport/ledger
+> contract is green; the final two-consecutive AT-11 runs are blocked by a
+> degrading bench (device drops off WiFi within minutes on ALL builds).
+> See `firmware/docs/DEBUG-PHASE4-AT11.md` for the full analysis, the
+> reverted wedge-supervisor experiment, and the fresh-bench re-run
+> procedure. Phase 4 feature set (from the earlier work, all still true):
+> Python MCA at `agent/` (websockets client, launchd, headless-pairable),
+> pairing ceremony (spec 3.2), hand-rolled RFC 6455 WS server on port 80
+> (`/agent/v1/ws`), polling fallback, heartbeat 5/15/30 s, verified app
+> launch/quit, Web UI Pairing tab, LittleFS key store, monotonic-clock
+> pairing windows, `/api/v1/apps/*` engine gate.
+> **Next: Phase 5 (verified lifecycle: power-command predicates,
+> expected-offline windows, AT-07–AT-09) once the AT-11 gate is re-run.**
 >
 > **2026-09-21: Phase 2 is COMPLETE.** ESP32-S3 acceptance passed: AT-01/02
 > all green (real `unconfirmed`/`hid_only`), AT-03/04 all green twice
@@ -135,16 +159,60 @@ python3 -m venv .venv && ./.venv/bin/pip install platformio   # if .venv missing
   windows). Pairing window/session liveness use `IClock::millis()`. The
   command engine's deadline/coalesce arithmetic is still epoch-based — fine
   post-sync, flagged as a Phase 5 cleanup.
-- **Heap discipline under poll load** (Phase 4, cost three reboots): never
+- **The task watchdog only forgives what it covers** (Phase 4 debug
+  session): every task loop must feed the TWDT *inside* long servicing
+  loops (a busy keep-alive connection starved `mc_http` → abort → reboot
+  mid-AT-06), and every blocking primitive needs a deadline (socket writes,
+  frame writes). lwIP's tcpip task is NOT TWDT-covered — a silent stack
+  wedge produces "WiFi associated, CLI alive, network dead" with zero
+  diagnostics.
+- **RAM ring erases the evidence** — log `esp_reset_reason()` at boot
+  (done: `boot` entry carries `"reset"`, also on the serial banner).
+  Without it, external resets and internal aborts are indistinguishable
+  after the fact. Hold a serial session during any repro to capture the
+  panic backtrace (names the starved task); a tee'd copy lives at
+  `/tmp/at06_tee.py` (monkeypatches at06's SerialSession to log serial).
+- **bad_alloc terminates even with a catch if it fires during unwind**
+  (double-fault rule) — on this 320 KB part, prevent the throw: the HTTP
+  server has a master heap watermark (`kMinLargestFreeBlock` 2048 B),
+  heap-aware log-page sizing, and static scratch fast paths. Never let a
+  request handler's `std::string`/`JsonDocument` growth throw; refuse or
+  serve partial allocation-free.
+- **Single-threaded server + keep-alive = head-of-line blocking**: a
+  poller faster than the 3 s idle bound starves the accept backlog
+  (at06's own polling blocked the MCA WS handshake for 90 s). The server
+  now preempts the idle wait when the backlog has a client
+  (`preempt_client_`). Watch for this pattern in any new endpoint.
+- **ws::write_fully used to drop frames on a momentarily full buffer**
+  (hello_ack timeouts that looked like network flakiness) — retry with a
+  deadline, like the HTTP write path.
+- Heap discipline under poll load (Phase 4, cost three reboots): never
   grow fresh `std::string`s in hot paths — one static response buffer serves
   all HTTP serializations; throttle LittleFS/NVS persistence (≥5 s); never
   let a lazy persist throw — `loop()` wraps its drains in try/catch. A crash
   during LittleFS traffic can also silently reformat LittleFS (keys/ledger
   live there now) while NVS (identity/pairing/Wi-Fi) survives.
-- **Closing the provisioning serial port reboots the S3** (macOS re-asserts
-  DTR/RTS; the CH343 lines drive EN/IO0). The reset lands 1–3 s after close
-  and silently destroys RAM-only state (pairing windows). Hold the port open
-  for a whole scripted session (see `SerialSession` in at06.py).
+- **Closing ANY serial port session reboots the S3** — not just the AT
+  scripts (macOS re-asserts DTR/RTS on open AND close; the CH343 lines
+  drive EN/IO0). Every `serial_cli.py` probe or debugger attach is a
+  device reboot: the boot banner + fresh WiFi association on each open is
+  the tell. Diagnose a live network fault over the network (ping/HTTP),
+  or hold ONE session open for the whole investigation; a probe-induced
+  reboot destroys RAM-only state and muddies every measurement.
+- **"WiFi associated, CLI alive, network dead" = heap, not AP** (2026-09-23):
+  idle-solid + dies-under-polling is per-request heap retention/fragmentation
+  until lwIP can't allocate TX buffers (`WiFiClient.cpp:429 errno 11` last
+  word, no panic/reboot). Read `[heap]` (free/largest/min) before blaming
+  the bench. Biggest tenants: full-revision ledger RAM (now latest-only),
+  JsonDocument pools (now static arenas), 40 KB mc_http stack.
+- **Liveness clocks and value provenance are different anchors** (2026-09-23):
+  freshness must be computed from the last admitted FRAME (agent silence,
+  spec 4.2.2), never from a value's `observed_at` (tracks state changes —
+  arbitrarily stale on an idle peer); and a harness measuring "N s of
+  silence" must anchor on the frame clock (heartbeat interval bound), not
+  on any five-tuple `observed_at`. Symmetric agent bug: the first heartbeat
+  must be due one interval after the burst frames, not after the telemetry
+  loop starts (the inline initial burst delays loop start by seconds).
 - Run AT scripts against the agent venv with `cwd=agent/`
   (`agent/.venv/bin/python -m maccontrol_agent`).
 - **ArduinoJson 7**: never `doc["x"] | nullptr` (bool-overload trap → null).

@@ -43,8 +43,17 @@ size_t KeyStore::active_count() const {
 bool KeyStore::touch(const std::string& key_id, uint64_t last_used_at) {
     for (auto& k : keys_) {
         if (k.key_id == key_id) {
-            k.last_used_at = last_used_at;
-            return true;
+            // 60 s quantization: under polling load a per-request update would
+            // dirty the store constantly and force a multi-KB persist every
+            // throttle window for attribution data that only moves once a
+            // minute anyway.
+            const uint64_t diff = k.last_used_at > last_used_at ? k.last_used_at - last_used_at
+                                                                 : last_used_at - k.last_used_at;
+            if (k.last_used_at == 0 || diff >= 60) {
+                k.last_used_at = last_used_at;
+                return true;
+            }
+            return false;
         }
     }
     return false;

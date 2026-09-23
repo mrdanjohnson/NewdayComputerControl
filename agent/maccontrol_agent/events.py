@@ -228,6 +228,13 @@ class Telemetry:
             return True
         return False
 
+    def anchor_heartbeat_timer(self):
+        """Call after a frame burst (session start): the first heartbeat is
+        due one interval after those frames, not after the telemetry loop
+        happens to start — otherwise a freshly connected agent sits silent
+        for burst-latency + interval and reads as prematurely stale."""
+        self._last_hb = time.monotonic()
+
     def emit_app_deltas(self):
         current = self.rt.app_monitor.probe()
         now = time.monotonic()
@@ -303,7 +310,8 @@ class Telemetry:
 
     async def run(self):
         import asyncio
-        self._last_hb = time.monotonic()
+        if not self._last_hb:
+            self._last_hb = time.monotonic()
         while not self.rt.stop_event.is_set():
             try:
                 self.emit_heartbeat_if_due()

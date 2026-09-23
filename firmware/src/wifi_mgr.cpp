@@ -1,6 +1,8 @@
 #include "wifi_mgr.h"
 #include <WiFi.h>
+#include <WiFiClient.h>
 #include <esp_random.h>
+#include <esp_system.h>
 #include <esp_task_wdt.h>
 #include "log_sink.h"
 #include "mc_log.h"
@@ -74,6 +76,16 @@ void WifiMgr::taskEntry(void* arg) {
                 ctx->log->write(mcco::LogCategory::System, mcco::LogLevel::Info,
                                 "wifi_connected", nullptr, nullptr, nullptr, nullptr);
             }
+            // NOTE: a wedge supervisor (gateway probe -> Wi-Fi re-init ->
+            // restart escalation) was TRIED here and REVERTED: the outbound
+            // probe adds socket concurrency to the lwIP stack this build
+            // already struggles with, and its multi-minute recovery latency
+            // does not fit AT windows. The residual "netif silently dies,
+            // WiFi still associated" instability is documented in
+            // docs/DEBUG-PHASE4-AT11.md as the open bench issue (suspects:
+            // AP ghost-client drops, USB power on the CH343, core-2.x lwIP
+            // concurrency). The boot log now records esp_reset_reason() so
+            // every death is classifiable after the fact.
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }

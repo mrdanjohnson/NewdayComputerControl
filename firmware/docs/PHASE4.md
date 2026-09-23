@@ -224,6 +224,24 @@ AT-01–AT-05 regression).
    `app_not_registered`/`app_control_disabled`) is Phase 6.
 6. MCA known gaps (README): OS sleep/wake notifications and the MCA's full
   5-view UI are later phases; screen-lock detection needs pyobjc.
+7. Log ring default 128 entries (spec default 512; range 128–2048) on the
+   ESP32-S3-DevKitC-1 N8 (320 KB RAM, no PSRAM): 512 × ~250 B leaves no heap
+   headroom for Wi-Fi under load. Log entries that exceed the 224-byte slot
+   are stored with an empty `detail` object (correlation IDs preserved).
+8. **Ledger RAM residency (2026-09-23)**: the in-RAM mirror keeps only the
+   LATEST revision per command (all revisions used to hydrate into RAM,
+   ~90 KB at 87 commands — the direct cause of the radio-death bug, see
+   `DEBUG-PHASE4-AT11.md`). The durable flash record is unchanged:
+   append-only, and `compact()` (post-eviction) filters only the evicted
+   command ids out of the file — superseded revisions of retained commands
+   are preserved verbatim. `latest()`/`list_newest_first()` semantics are
+   identical.
+9. **Agent-reported freshness is silence-based (2026-09-23, spec 4.2.2
+   conformance)**: `mac.state`/`mac.locked`/… go `stale` after
+   `stale_threshold_s` of AGENT SILENCE (anchored at the last admitted
+   frame), not after the last state change — previously an idle Mac with
+   flowing heartbeats read stale. `observed_at` still carries the value's
+   true observation time (provenance unchanged).
 
 ## Verification status
 
@@ -249,6 +267,17 @@ AT-01–AT-05 regression).
     `connection.agent` true + `mac.state` fresh, late second pair → 409,
     bogus bearer → 401, mDNS TXT `mode=B pair=active`, token-leak check.
   - AT-11 — see below.
+- **ESP32-S3 acceptance (2026-09-23, heap-headroom + freshness binary),
+  device mac-b53478.local (gate re-run after the DEBUG-PHASE4-AT11
+  root-cause session):**
+  - Heap: steady-state `free 109 KB / largest 90 KB` (was 6.8–16.7 KB);
+    127-request 1 Hz keep-alive soak flat; 3× 6-request wrong-code pair
+    bursts exact (403×4 → 409×2); radio alive throughout.
+  - AT-06 — **all checks passed** (18 s run, one boot).
+  - AT-11 — **all checks passed in both rounds, twice consecutively on one
+    boot** (the §16.1 gate). Phase-A timing textbook: stale 14.2–16.4 s,
+    offline 30.4–32.6 s of agent silence in all four rounds.
+  - Native 114/114 on the final code.
 - Web UI Pairing tab: browser-checked (window open → code + countdown →
   ceremony completes in the MCA → state flips to Paired/Mode B; revoke
   returns to Mode A).

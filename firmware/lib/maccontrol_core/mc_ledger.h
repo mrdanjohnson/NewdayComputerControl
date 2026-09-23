@@ -57,7 +57,8 @@ public:
 
 private:
     struct Entry {
-        std::vector<CommandRecord> revisions;
+        CommandRecord latest;       // highest-revision record (the observable state)
+        uint32_t max_revision = 0;  // revision counter; the durable stream keeps history
         uint64_t first_seq = 0; // global acceptance counter, defines FIFO order
     };
 
@@ -72,6 +73,7 @@ private:
     bool loaded_ = false;
     std::map<std::string, Entry> entries_;
     std::deque<std::string> fifo_; // command_ids in acceptance order
+    std::vector<std::string> pending_evict_; // ids evicted since the last compact()
     uint64_t accept_seq_ = 0;
 };
 

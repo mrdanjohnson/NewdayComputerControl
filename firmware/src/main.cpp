@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <esp_system.h>
 #include <esp_task_wdt.h>
 #include <ArduinoJson.h>
 #include <optional>
@@ -64,6 +65,25 @@ static const char* pair_txt(mcco::PairingState s) {
     }
 }
 
+// Classifies the PREVIOUS boot's termination: the RAM log ring dies with the
+// chip, so without this an external reset (serial DTR/RTS landmine) and an
+// internal abort (WDT panic, brownout) are indistinguishable after the fact.
+static const char* reset_reason_str(esp_reset_reason_t r) {
+    switch (r) {
+        case ESP_RST_POWERON: return "poweron";
+        case ESP_RST_EXT: return "ext";
+        case ESP_RST_SW: return "sw";
+        case ESP_RST_PANIC: return "panic";
+        case ESP_RST_INT_WDT: return "int_wdt";
+        case ESP_RST_TASK_WDT: return "task_wdt";
+        case ESP_RST_WDT: return "wdt";
+        case ESP_RST_DEEPSLEEP: return "deepsleep";
+        case ESP_RST_BROWNOUT: return "brownout";
+        case ESP_RST_SDIO: return "sdio";
+        default: return "unknown";
+    }
+}
+
 void apply_pairing_mode() {
     mcco::PairingState st;
     {
@@ -78,6 +98,15 @@ void apply_pairing_mode() {
 } // namespace
 
 void setup() {
+    // Heap-fragmentation canary: hold a large contiguous block through
+    // bring-up (WiFi/lwIP/mDNS allocate around it), then release it before
+    // the HTTP surface opens so response paths always have a big hole for
+    // pbuf clusters and ArduinoJson pools. Under AT poll volume the heap
+    // otherwise fragments until lwIP cannot allocate TX buffers — write()
+    // EAGAIN storms and multi-second stalls (observed on hardware: min
+    // largest-free-block 2292 B, then an mc_http task-WDT abort).
+    void* heap_canary = heap_caps_malloc(24 * 1024, MALLOC_CAP_8BIT);
+
     // Static context pointers first: the CLI banner reads ctx->config.
     ctx.config = &g_config;
     ctx.clock = &g_clock;
@@ -241,8 +270,10 @@ void setup() {
                 nullptr, nullptr, recon_detail);
     g_log.write(mcco::LogCategory::System, mcco::LogLevel::Warn, "boot", nullptr, nullptr,
                 nullptr,
-                (std::string("{\"device_id\":\"") + g_config.identity().device_id + "\"}")
+                (std::string("{\"device_id\":\"") + g_config.identity().device_id +
+                 "\",\"reset\":\"" + reset_reason_str(esp_reset_reason()) + "\"}")
                     .c_str());
+    Serial.printf("reset reason: %s\n", reset_reason_str(esp_reset_reason()));
 
     // USB HID (keyboard-only descriptor per build flag).
     g_hid.begin();
@@ -284,6 +315,10 @@ void setup() {
     // GPIO bindings attach after everything they invoke is wired.
     g_triggers.begin(&ctx);
 
+    // Release the canary: the 24 KB contiguous hole is now free for the
+    // server's TX/JSON allocations (see setup() top).
+    if (heap_canary) heap_caps_free(heap_canary);
+
     g_http.begin(&ctx, 80);
 
     Serial.printf("init complete in %u ms\n", (unsigned)(millis() - boot_start_ms));
@@ -291,14 +326,22 @@ void setup() {
 
 void loop() {
     esp_task_wdt_reset();
-    g_cli.poll();
+    try {
+        g_cli.poll();
+    } catch (const std::exception&) {
+        // OOM firewall: a CLI command that cannot allocate must not abort.
+        Serial.println("error: command failed (out of memory)");
+    } catch (...) {
+        Serial.println("error: command failed");
+    }
 
-    // Lazily persist key last_used_at mutations. Throttled: every
-    // authenticated request sets keys_dirty, and the std::string built by
-    // persistKeys needs a large contiguous heap block — under AT poll load
-    // an unthrottled drain can hit a fragmented heap and bad_alloc aborts
-    // the firmware (observed on hardware during AT-11). Leaving the flag set
-    // retries on a later pass; a failed persist must not kill the device.
+    // Lazily persist key last_used_at mutations. Throttled: touch() is
+    // quantized to 60 s so polling only dirties the store once a minute, and
+    // the std::string built by persistKeys needs a large contiguous heap
+    // block — under AT poll load an unthrottled drain can hit a fragmented
+    // heap and bad_alloc aborts the firmware (observed on hardware during
+    // AT-11). Leaving the flag set retries on a later pass; a failed persist
+    // must not kill the device.
     static uint32_t last_keys_persist_ms = 0;
     try {
         if (ctx.keys_dirty && millis() - last_keys_persist_ms > 5000) {
@@ -341,16 +384,21 @@ void loop() {
 
     // Heap watermark telemetry: under AT poll load the device rebooted with
     // bad_alloc aborts, so track free/largest/minimum to correlate crashes
-    // with the leaking/churning phase (temporary diagnostic).
+    // with the leaking/churning phase (temporary diagnostic). Task stack
+    // high-water marks (bytes) expose which task is closest to its limit.
     static uint32_t last_heap_log_ms = 0;
     if (millis() - last_heap_log_ms > 30000) {
         last_heap_log_ms = millis();
+        auto hwm = [](TaskHandle_t t) { return t ? uxTaskGetStackHighWaterMark(t) * 4 : 0; };
         std::string detail = std::string("{\"free\":") +
                              std::to_string(esp_get_free_heap_size()) +
                              ",\"min\":" + std::to_string(esp_get_minimum_free_heap_size()) +
                              ",\"largest\":" +
                              std::to_string(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)) +
-                             "}";
+                             ",\"stacks\":{\"http\":" + std::to_string(hwm(g_http.taskHandle())) +
+                             ",\"ws\":" + std::to_string(hwm(g_agent_link.taskHandle())) +
+                             ",\"dispatch\":" + std::to_string(hwm(g_dispatcher.taskHandle())) +
+                             ",\"wifi\":" + std::to_string(hwm(g_wifi.taskHandle())) + "}}";
         g_log.write(mcco::LogCategory::System, mcco::LogLevel::Info, "heap",
                     nullptr, nullptr, nullptr, detail.c_str());
         Serial.printf("[heap] %s\n", detail.c_str());  // TEMP diagnostic

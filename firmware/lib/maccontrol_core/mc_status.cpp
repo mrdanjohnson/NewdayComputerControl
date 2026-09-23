@@ -55,7 +55,12 @@ static bool agent_connected(const AgentStatus* a, uint64_t now) {
 
 static Freshness agent_freshness(const AgentStatus* a, uint64_t at, uint64_t now) {
     if (!a || at == 0) return Freshness::Unknown;
-    return (now - at > a->stale_threshold_s) ? Freshness::Stale : Freshness::Fresh;
+    // Spec 4.2.2: agent-reported tuples go STALE after stale_threshold_s of
+    // AGENT SILENCE, not after the last state change — heartbeats keep them
+    // fresh while the session lives (observed_at stays the value's true
+    // provenance). Last frame unknown: fall back to the observation age.
+    const uint64_t anchor = a->last_frame_at != 0 ? a->last_frame_at : at;
+    return (now - anchor > a->stale_threshold_s) ? Freshness::Stale : Freshness::Fresh;
 }
 
 void build_status(JsonDocument& doc, const Identity& id, bool usb_up,

@@ -1,140 +1,158 @@
-# Phase 4 AT-11 gate — debug status (2026-09-23)
+# Phase 4 AT-11 gate — debug log (status: **GATE PASSED 2026-09-23** —
+# AT-06 all green + AT-11 all green twice consecutively on one boot; the
+# "degrading bench" below turned out to be two more firmware defects, both
+# fixed — see "2026-09-23 session")
 
-This document captures where Phase 4 stands, the stability work that consumed
-most of the hardware bring-up, and the one remaining blocker: an AT-06
-ceremony flake that has resisted five fix rounds. Read `docs/PHASE4.md` for
-the feature/verification picture; this file is the working debug log.
+This document is the working record of the AT-06 ceremony flake / AT-11
+instability that consumed the Phase 4 bring-up, and of what the 2026-09-22
+debug session (re)found and fixed. Read `docs/PHASE4.md` for the
+feature/verification picture.
 
-## What is DONE and verified green
+## TL;DR
 
-- Core library (114/114 native tests): pairing store, agent event envelope,
-  session state machine, mode-aware status/capabilities, engine Mode B app
-  launch/quit lifecycle, OpenAPI additions.
-- MCA Python agent (`../agent/`): pairing, WS transport, backoff, polling
-  fallback, closed action set, launchd plist.
-- Web UI Pairing tab.
-- **AT-01/AT-02, AT-03/AT-04 (twice), AT-05: green on hardware.**
-- **AT-06: has passed end-to-end multiple times** (ceremony, Mode B evidence,
-  mDNS TXT, token-leak check) — but is currently flaky (see below).
-- **AT-11: every individual check has passed at least once** across runs
-  (heartbeat-loss stale ~15 s/offline ~30 s with the monotonic-clock fix,
-  reconnect backoff, WS dispatch → `completed/app_launch_confirmed`, polling
-  fallback → identical ledger outcome, pending-endpoint probes). It has not
-  yet completed two consecutive clean runs because the device underneath it
-  kept dying — see the stability saga.
+The "AT-06 ceremony flake" was **never a pairing bug and mostly not the
+serial DTR/RTS landmine**. The reboots that destroyed RAM-only pairing
+windows were `mc_http` **task-watchdog aborts** (ground truth: `reset:
+task_wdt` in the boot log, serial backtrace naming `mc_http`), caused by
+four compounding firmware defects, all now fixed and flashed:
 
-## The stability saga (root causes found and fixed — all flashed)
+1. **WDT starvation under busy keep-alive** — the HTTP task fed the task
+   watchdog only at the top of its accept loop; ~10 s of back-to-back
+   requests on one connection (exactly what the AT harness's keep-alive
+   polling does) starved it → IDF TWDT panic → abort → reboot.
+2. **Unbounded socket writes** — `writeFully`/`ws::write_fully` could pin a
+   task past the WDT (or drop WS frames outright on a momentarily full
+   socket buffer — the "hello_ack timeout" symptom).
+3. **Keep-alive head-of-line blocking** — the single-threaded server held a
+   keep-alive connection for up to 3 s after every request, so a poller
+   re-requesting faster than the idle bound starved the accept backlog
+   **indefinitely** (at06's 1 Hz capabilities polling blocked the MCA
+   WebSocket handshake for the whole 90 s connect window).
+4. **Uncaught `bad_alloc` → abort** — under heap pressure a
+   `std::string::reserve` in `sendJson` threw; nothing caught it →
+   `std::terminate` → abort → reboot (decoded from a panic backtrace).
+   A throw *during* exception unwinding terminates even with a catch, so
+   the fix is preventing the throw: master heap watermark + heap-aware log
+   page sizing + allocation-free fast paths.
 
-The device rebooted or wedged ~8 times during AT-11-length runs. Each cause
-was found and fixed; the fixes compound:
+## What was fixed (all flashed on the S3)
 
-1. **Serial backtrace #1**: `bad_alloc` in `ConfigStore::persistKeys` from the
-   unthrottled `keys_dirty` drain. → Key persistence throttled ≥5 s,
-   `try/catch` around all `loop()` drains.
-2. **g_body retention**: one static response `std::string` grew to ~150 KB on
-   the first `logs?limit=512` response and held it forever. → removed.
-3. **512-entry heap string log ring**: ~128 KB heap tenant → idle free heap
-   ~34 KB. → fixed-slot static ring. First attempt (512×256 B static) starved
-   the heap arena itself ("Network Event Task Start Failed!", no Wi-Fi);
-   settled on **128 entries × 224 B** (spec allows 128–2048; documented
-   deviation). Idle heap now ~32 KB, min ~22 KB.
-4. **Task-WDT abort on `tiT`**: the 1 s liveness timer called
-   `engine.on_agent_offline()` (LittleFS under locks) inside the timer daemon
-   task. → deferred to the dispatcher's 1 s sweep via `offline_pending_`.
-5. **WiFiClient short writes**: `client.write` drops bytes on EAGAIN;
-   `serializeJson(doc, client)` single-byte Print writes silently lose data
-   (invalid JSON on the wire). → `writeFully()` everywhere; responses are
-   exact-size transient strings.
-6. **WiFiClient through a FreeRTOS queue**: `xQueueSend` memcpys the object,
-   corrupting shared_ptr handle accounting. → mutex-protected deque +
-   task notification.
-7. **Transport churn wedges the network stack**: ~2 fresh TCP connections/s
-   (urllib per request) wedged lwIP/Wi-Fi in ~60–90 s — the firmware stayed
-   alive (CLI answered) but HTTP/mDNS died. → HTTP keep-alive support on the
-   server (3 s idle bound between requests; the server is single-threaded)
-   + all AT scripts now share `scripts/mc_http.py` (persistent connection).
-8. **Log-slot truncation**: 176-byte slots truncated entries mid-JSON. →
-   224-byte slots.
+- `src/http_api.cpp` — WDT feeds inside `handleClient`, the keep-alive
+  loop, and the write spin; 4 s absolute `kWriteTimeoutMs` on writes
+  (logs `write_timeout`, drops the client); **backlog preemption** (a
+  keep-alive idle wait peeks `accept()` ~10×/s and yields to a waiting
+  client via `preempt_client_`); **master heap guard**
+  (`kMinLargestFreeBlock` 2048 B — refuse allocation-free below this);
+  heap-aware `sendJson` (static 2.5 KB scratch for small responses);
+  heap-aware `/api/v1/logs` page sizing (serves a partial page that fits
+  instead of refusing); `try/catch` around all per-client servicing with an
+  allocation-free static 500; reusable member `JsonDocument`s for
+  `/status` + `/capabilities` (pool survives `clear()`, no per-request
+  pool churn).
+- `src/ws_server.cpp` — `write_fully` retries with a 4 s deadline instead
+  of dropping the frame on the first full buffer; WDT feeds in the WS
+  read/write spins.
+- `src/agent_link.cpp`, `src/command_dispatcher.cpp`, `src/main.cpp` —
+  OOM `try/catch` firewalls around the WS session, dispatch processing,
+  and CLI polling (a failed allocation logs and skips, never aborts).
+- `src/main.cpp` — boot log now records `esp_reset_reason()` (boot entry
+  gains `"reset":"poweron|ext|sw|panic|int_wdt|task_wdt|brownout|..."`;
+  also printed to the serial banner). **Every future reboot is
+  classifiable after the fact** — the RAM ring dies with the chip, so
+  without this an external reset and an internal abort were
+  indistinguishable (the original misdiagnosis).
+- `scripts/mc_http.py` — up to 3 attempts with a 1 s pause on a dropped
+  socket (the Wi-Fi link stalls mid-response occasionally; the firmware
+  cuts stalled transfers after ~4 s, and a fresh connection then succeeds
+  immediately).
 
-After all fixes: 5-minute sustained keep-alive polling soak = **no crashes,
-no wedges**, heap stable. The stability war is won.
+Verification on the fixed binary: `pio run` both envs clean; native
+**114/114**; keep-alive soak (1 Hz × 90, the old starvation pattern)
+clean; 11 write-stall events all survived as ~4 s hiccups; **AT-06 ran
+fully green** (all checks, one continuous boot); AT-11 run 1: every
+transport/ledger check green (WS dispatch → `completed/
+app_launch_confirmed`, quit → `app_quit_confirmed`, polling fallback
+record identical shape, pending-endpoint probes) — its Phase-A timing
+checks were polluted by the bench issue below, not by firmware behavior.
 
-## THE STUCK ISSUE: AT-06 ceremony flake (wrong-code burst variant)
+## Bench state — RESOLVED 2026-09-23 (it was never the AP)
 
-**Symptom**: in `scripts/at06.py`, steps 1–2b pass — window opens, 5-wrong-code
-burst behaves correctly (403s, then 409 when the window closes), a fresh
-window opens, and the device-side check `agent status` reports
-`pairing state: pairing_window, 118s remaining, 0 failed attempts`. The MCA's
-`POST /agent/v1/pair` then returns **409 `agent_not_paired`** ("PAIR FAILED:
-pairing window closed or absent"). Immediately afterwards `agent status`
-reports **`pairing state: active`** — i.e. a pairing record exists.
+The "device drops off WiFi within 1–3 minutes of every boot" symptom that
+looked like a degrading bench/AP ghost-client was reproduced, root-caused and
+fixed. Summary of the forensics (full detail in the session notes below):
+idle (zero HTTP traffic) the device is rock-solid for 4+ minutes with
+`free 16.7 KB / largest 10.2 KB`; under keep-alive HTTP polling at 1 Hz the
+heap retained ~350–450 B per request and the largest free block collapsed
+from ~4.6 KB to ~2.1 KB in ~26 requests, after which lwIP/Wi-Fi could no
+longer allocate TX buffers and the radio went permanently silent (no panic,
+no reboot, serial alive — `WiFiClient.cpp:429 write(): errno 11` last word).
+The AT harness polls from boot, so the "1–3 minute" death was simply
+~25 requests of poll load. Root causes and fixes shipped 2026-09-23:
 
-**Facts established**:
-- The MCA posts exactly once (`post_pair` in `__main__.py`, no retry).
-- The same flow **works when run manually** (serial window open with the port
-  held open, then `curl` the pair → 200 + token).
-- The failing variant differs only in the preceding 6-request wrong-code
-  burst, which uses the keep-alive `mc_http` connection.
-- The device log from the last failure shows **a fresh boot ~30 s into the
-  at06 run** (`boot`/`pairing_restored` at 00:23:30, only boot-era entries in
-  the ring) — so the DTR/RTS landmine (port close/hiccup → EN/IO0 toggle →
-  reboot) fires MID-TEST despite the port being held open. A reboot between
-  the serial window check and the HTTP POST explains everything: the
-  118-second window is RAM-only and dies with the reset; the POST is served
-  after reboot → 409; the `active` state afterwards is a **restored previous
-  pairing** (pairing is synchronously persisted to NVS since the last fix,
-  so old records resurrect across the reboot and mask the reset).
-- Why the port held open still resets the device is unproven: candidates are
-  a pyserial/USB transient that momentarily reasserts DTR/RTS, or macOS USB
-  power management on the CH343. The reset is silent — pyserial sees no
-  error; the only tell is device-side state vanishing.
+1. **In-RAM ledger held every revision of every command** (only the latest
+   is ever observed) — at 87 commands this alone consumed ~90 KB. Now
+   latest-revision-only in RAM; `compact()` filters evicted ids from the
+   flash file, so the durable append-only history is unchanged.
+2. **`status_doc_`/`caps_doc_` were heap-pooled ArduinoJson documents** —
+   now `JsonDocument` over custom 3072 B static arenas (first-fit,
+   coalescing; heap fallback only on arena overflow, which
+   `overflowed()` detects).
+3. **Per-request malloc churn** (~15–20 allocs: fresh `header_block`
+   reserve, `std::string` header concatenation) — `header_block` is now a
+   cleared-not-shrunk member and all response headers are `snprintf`'d into
+   a reused 384 B buffer (wire format byte-identical).
+4. **API-key `touch()` dirtied keys on every request** → multi-KB LittleFS
+   persist every 5 s under polling — now quantized to 60 s, dirty flag only
+   on actual change.
 
-**Fixes already applied for this** (not sufficient):
-- `SerialSession` holds the port for the whole test (close = certain reboot).
-- Wait-for-HTTP-up after session init (the port-open reset boots the device).
-- 90 s daemon-connect window; post-ceremony `agent status` diagnostic.
-- Pairing persisted synchronously in the pair route (NVS).
+Result: steady-state heap `free 109 KB / largest 90 KB` (was 6.8–16.7 KB),
+127-request 1 Hz soak flat, 3× wrong-code bursts exact (403×4 → 409×2).
+The ~400 B/request retention itself lives in the binary Wi-Fi/lwIP stack
+(core 2.0.17) and is unreachable from `src/` — with 90 KB of headroom it is
+harmless. If it ever bites again (e.g. a much longer soak), the ranked
+fallbacks are a heap-triggered Wi-Fi circuit breaker in `WifiMgr` and, last
+resort, an Arduino-core major upgrade. `[heap]` telemetry (now with per-task
+stack high-water marks: http 20.9 KB of 40 KB, ws 29.3 of 32, dispatch 18.4
+of 24, wifi 5.3 of 12) stays until Phase 5 soaks confirm stability.
 
-**Hypotheses not yet tested** (next steps, in order):
-1. Instrument the device to log every reset reason at boot (`esp_reset_reason()`)
-   to the RAM log — distinguish DTR/RTS reset (EXT/POWERON) from crash. Cheap
-   and definitive for the reset itself.
-2. In at06, run the ceremony POST **immediately** after the fresh window open
-   (skip nothing) and re-verify `window_state()` <1 s before the POST; if the
-   state flipped to `unpaired`, reopen the window and retry once — a bounded
-   retry loop makes the test robust to one mid-test reset instead of fighting
-   it.
-3. Move the wrong-code burst to AFTER the real ceremony (spec order doesn't
-   require the burst first; window #1 vs #2 sequencing is the test's own
-   construction). This sidesteps the burst/keep-alive interaction entirely.
-4. USB-capture (tcpdump on the CH343 via `sudo` — needs the user) to see the
-   DTR/RTS toggle directly.
-5. Firmware-side resilience (optional, spec-adjacent): allow a *just-closed*
-   window a 5 s grace re-open via the same code — rejected for now (weakens
-   the 5-failure rule; prefer fixing the harness).
+## 2026-09-23 session: AT-11 Phase-A timing + the fixes that made the gate pass
 
-**How to resume**:
-- Keys on the device (re-provision if wiped again — check
-  `GET /api/v1/status` with the READ key first):
-  READ `mck_rgKsmf2TbsW5j_A_0t4-IxwXm7UHfHePWIKLnhRvIP4`,
-  CONTROL `mck_D0zNN8OpljPahCV55mewdRpYO5M5Za9bxlakA3_4CLY`,
-  ADMIN `mck_uQ2oLEpyrOtCYyXDFPwe-ErKesKm1Vap_f2Ppwwu8Hk`
-- Device: `mac-b53478.local`, serial `/dev/cu.usbmodem5CBD0148591`.
-- The device currently holds a leftover ACTIVE pairing from debugging; the
-  agent state file `/tmp/mc_at_agent.json` does NOT match it — delete it and
-  let at06 re-pair (ceremony revokes the incumbent).
-- Run: `python3 scripts/at06.py --hostname mac-b53478.local --read-key …
-  --control-key … --serial-port /dev/cu.usbmodem5CBD0148591` then
-  `python3 scripts/at11.py …` twice consecutively (§16 rule).
-- Working conventions that MUST be respected: monotonic clock for intervals;
-  `writeFully` for all socket writes; never a FreeRTOS queue of WiFiClient;
-  throttle persists; no fresh std::string in hot paths; kill stray MCA
-  daemons (`pkill -f maccontrol_agent`) before every run — two daemons
-  ping-pong supersede sessions and look like flakiness.
+With the radio stable, AT-11's remaining failures were Phase-A *timing*
+checks — three real defects, one per component:
 
-## Deviation note to fold into PHASE4.md when the gate passes
+- **Firmware** (`lib/maccontrol_core/mc_status.cpp` `agent_freshness`):
+  `mac.state.freshness` was computed from the last **system-state change**
+  (`system_at`), not agent silence — on an idle Mac the state tuple read
+  stale even with heartbeats flowing (AT-11 round 1 observed freshness
+  already stale at kill time). Now stale after `stale_threshold_s` of
+  **agent silence** (anchored at `last_frame_at`, observed_at keeps its
+  value provenance) — exactly spec 4.2.2's "stale after 3 intervals of
+  silence".
+- **Harness** (`scripts/at11.py`): the silence clock anchored on
+  `mac.state.observed_at` (`system_at`) — systematically ~12–14 s stale on
+  an idle Mac, overshooting every age (offline read 42–44 s vs the 30 s
+  threshold). Now anchored at the heartbeat interval (5 s): freshness is
+  silence-based, so true silence at the kill is ≤ one interval, and the
+  15–22 s / 30–40 s windows absorb the quantization exactly.
+- **Agent** (`agent/maccontrol_agent/events.py` + `__main__.py`): the first
+  heartbeat was due 5 s after the telemetry **loop** started, which begins
+  only after the (slow, inline) initial status burst — a freshly connected
+  agent sat silent for burst-latency + interval (~13 s observed) and read
+  as prematurely stale. `on_session_start` now anchors the heartbeat timer
+  right after the burst.
 
-Log ring default 128 entries (spec default 512; range 128–2048) on the
-ESP32-S3-DevKitC-1 N8 (320 KB RAM, no PSRAM): 512 × ~250 B leaves no heap
-headroom for Wi-Fi under load. Log entries that exceed the 224-byte slot are
-stored with an empty `detail` object (correlation IDs preserved).
+One residual flake, not a defect: a single `quit` timed out when macOS
+stalled the `osascript` AppleEvent past the 10 s `ACTION_TIMEOUT_S` (plus
+command redelivery side-effects); never recurred across the remaining gate
+quits. If it recurs, look at duplicate-result handling before re-running.
+
+Gate evidence (2026-09-23, one boot, final binary): AT-06 all checks green;
+AT-11 run 1 — all checks green in both rounds (stale 16.2/14.2 s, offline
+30.4/30.5 s); AT-11 run 2 — all checks green in both rounds (stale 16.3/14.3
+s, offline 32.6/30.5 s). Native 114/114 throughout.
+
+## Deviation note — FOLDED into PHASE4.md on 2026-09-23 (gate passed)
+
+The log-ring deviation (item 7) and the two 2026-09-23 deviations (ledger
+RAM residency item 8, silence-based freshness item 9) are now in
+`docs/PHASE4.md` "Deviations".

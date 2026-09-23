@@ -136,5 +136,6 @@
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/io_pin_remap.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Arduino.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/cores/esp32/Client.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/esp_system/include/esp_task_wdt.h \
  lib/maccontrol_core/mc_ids.h lib/maccontrol_core/mc_random.h \
  lib/maccontrol_core/mc_sha1.h

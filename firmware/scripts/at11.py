@@ -270,18 +270,12 @@ def phase_a_heartbeat_loss(checker, base, read_key, hostname, state_file, bundle
                   elapsed is not None, "agent.connected stayed false for 40 s")
     hard_kill_daemon()  # unannounced loss: no goodbye, no close frame
     # The clock starts at the last ADMITTED agent frame (heartbeats can land
-    # up to one interval before the kill), not at the kill instant.
-    s, doc = http("GET", base, "/api/v1/status", key=read_key)
-    observed_at = (((doc.get("mac") or {}).get("state") or {}).get("observed_at"))
-    head_start = 0.0
-    if observed_at:
-        try:
-            from datetime import datetime, timezone
-            last_act = datetime.strptime(observed_at, "%Y-%m-%dT%H:%M:%SZ").replace(
-                tzinfo=timezone.utc).timestamp()
-            head_start = min(max(time.time() - last_act, 0.0), 14.0)
-        except ValueError:
-            head_start = 0.0
+    # up to one interval before the kill), not at the kill instant. Freshness
+    # is silence-based (spec 4.2.2), so at kill time the true silence is at
+    # most one heartbeat interval — mac.state.observed_at is NOT a valid
+    # anchor (it tracks system-state changes, which can be much older on an
+    # idle mac; anchoring on it overshoots the age by that gap).
+    head_start = 5.0  # one heartbeat interval (spec 4.2.2 default)
     print(f"  ... last agent frame was {head_start:.1f} s before the kill")
     t0 = time.monotonic()
     stale_at = offline_at = None

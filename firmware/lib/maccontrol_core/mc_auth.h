@@ -46,6 +46,9 @@ public:
     void restore(std::vector<KeyRecord> persisted) { keys_ = std::move(persisted); }
 
     // Updates last_used_at for a key (called lazily by the HTTP layer).
+    // Quantized to 60 s: returns true only when the stored value actually
+    // changed (never-used keys always update), so callers can skip the
+    // expensive persist when nothing moved.
     bool touch(const std::string& key_id, uint64_t last_used_at);
 
     // Matches a presented raw key against stored digests. `now` enforces

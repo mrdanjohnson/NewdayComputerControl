@@ -1,6 +1,7 @@
 #include "ws_server.h"
 #include <Arduino.h>
 #include <string.h>
+#include <esp_task_wdt.h>
 #include "mc_ids.h"
 #include "mc_sha1.h"
 
@@ -8,6 +9,10 @@ namespace ws {
 
 namespace {
 constexpr char kGuid[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+// Mirrors the HTTP server's kWriteTimeoutMs: a stalled peer must fail the
+// frame, not pin the agent task into the task-WDT abort (a momentary full
+// socket buffer must also not drop the frame — retry until the deadline).
+constexpr uint32_t kWsWriteTimeoutMs = 4000;
 
 // Read result: 1 = exactly n bytes, 0 = deadline hit while connected,
 // -1 = disconnect or socket error.
@@ -22,17 +27,28 @@ int read_fully(WiFiClient& client, uint8_t* buf, size_t n, uint32_t timeout_ms) 
         }
         if (!client.connected()) return -1;
         if ((uint32_t)millis() - start >= timeout_ms) return 0;
+        esp_task_wdt_reset();
         delay(1);
     }
     return 1;
 }
 
 bool write_fully(WiFiClient& client, const uint8_t* data, size_t n) {
+    const uint32_t start = millis();
     size_t sent = 0;
     while (sent < n) {
         int w = client.write(data + sent, n - sent);
-        if (w <= 0) return false;
-        sent += (size_t)w;
+        if (w > 0) {
+            sent += (size_t)w;
+            continue;
+        }
+        if (!client.connected()) return false;
+        if ((uint32_t)millis() - start >= kWsWriteTimeoutMs) {
+            client.stop();
+            return false;
+        }
+        esp_task_wdt_reset();
+        delay(1);
     }
     return true;
 }

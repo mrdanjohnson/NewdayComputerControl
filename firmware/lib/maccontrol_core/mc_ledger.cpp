@@ -106,15 +106,16 @@ bool Ledger::load() {
             accept_seq_++;
             Entry e;
             e.first_seq = accept_seq_;
+            e.latest = rec;
+            e.max_revision = rec.revision;
             it = entries_.emplace(rec.command_id, std::move(e)).first;
             fifo_.push_back(rec.command_id);
+        } else if (rec.revision >= it->second.max_revision) {
+            // Highest revision wins (a duplicate revision line replaces, as
+            // before); first appearance still defines acceptance/FIFO order.
+            it->second.latest = rec;
+            it->second.max_revision = rec.revision;
         }
-        // Revision 1 (or lowest seen) defines acceptance; keep revisions ordered.
-        auto& revs = it->second.revisions;
-        auto pos = revs.begin();
-        while (pos != revs.end() && pos->revision < rec.revision) ++pos;
-        if (pos != revs.end() && pos->revision == rec.revision) *pos = rec;
-        else revs.insert(pos, rec);
     });
     loaded_ = ok;
     return ok;
@@ -134,18 +135,17 @@ bool Ledger::append_revision(CommandRecord& rec) {
         fifo_.push_back(rec.command_id);
         rec.revision = 1;
     } else {
-        uint32_t max_rev = 0;
-        for (const auto& r : it->second.revisions) max_rev = r.revision > max_rev ? r.revision : max_rev;
-        rec.revision = max_rev + 1;
+        rec.revision = it->second.max_revision + 1;
     }
     if (!persist_revision(rec)) {
-        if (it->second.revisions.empty()) {
+        if (it->second.max_revision == 0) {
             entries_.erase(it);
             fifo_.pop_back();
         }
         return false;
     }
-    it->second.revisions.push_back(rec);
+    it->second.latest = rec;
+    it->second.max_revision = rec.revision;
     log_.write(LogCategory::Command, LogLevel::Info, "state_transition", rec.command_id.c_str(),
                nullptr, nullptr,
                nullptr); // detail JSON filled by the engine layer
@@ -155,8 +155,8 @@ bool Ledger::append_revision(CommandRecord& rec) {
 
 const CommandRecord* Ledger::latest(const std::string& command_id) const {
     auto it = entries_.find(command_id);
-    if (it == entries_.end() || it->second.revisions.empty()) return nullptr;
-    return &it->second.revisions.back();
+    if (it == entries_.end()) return nullptr;
+    return &it->second.latest;
 }
 
 std::vector<const CommandRecord*> Ledger::list_newest_first() const {
@@ -181,15 +181,13 @@ void Ledger::evict_oldest() {
             CommandRecord term = *cur;
             term.state = CommandState::Failed;
             term.error_code = "evicted_pending";
-            uint32_t max_rev = 0;
-            for (const auto& r : it->second.revisions) max_rev = r.revision > max_rev ? r.revision : max_rev;
-            term.revision = max_rev + 1;
+            term.revision = it->second.max_revision + 1;
             if (persist_revision(term)) {
-                it->second.revisions.push_back(term);
                 log_.write(LogCategory::Command, LogLevel::Warn, "evicted_pending", victim.c_str(),
                            nullptr, nullptr, nullptr);
             }
         }
+        pending_evict_.push_back(victim);
         entries_.erase(it);
     }
     fifo_.pop_front();
@@ -197,13 +195,22 @@ void Ledger::evict_oldest() {
 }
 
 void Ledger::compact() {
+    if (pending_evict_.empty()) return;
+    // Rewrite the durable stream verbatim minus evicted commands: the full
+    // revision history stays on disk even though RAM holds one record per
+    // command. Unparseable lines are kept verbatim (load() already skips them).
     std::vector<std::string> lines;
-    for (const auto& id : fifo_) {
-        auto it = entries_.find(id);
-        if (it == entries_.end()) continue;
-        for (const auto& r : it->second.revisions) lines.push_back(record_to_json(r));
-    }
+    storage_.read_all([&](const std::string& line) {
+        CommandRecord rec;
+        if (record_from_json(line, rec)) {
+            for (const auto& id : pending_evict_) {
+                if (id == rec.command_id) return;
+            }
+        }
+        lines.push_back(line);
+    });
     storage_.replace_all(lines);
+    pending_evict_.clear();
 }
 
 } // namespace mcco

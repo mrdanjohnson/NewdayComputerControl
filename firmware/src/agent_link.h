@@ -35,6 +35,7 @@
 class AgentLink {
 public:
     bool begin(AppContext* ctx); // creates the WS task + liveness timer
+    TaskHandle_t taskHandle() const { return task_; }
 
     // HTTP task: hand over an upgraded /agent/v1/ws client. Non-blocking;
     // false means the handoff queue is full (caller closes the connection).

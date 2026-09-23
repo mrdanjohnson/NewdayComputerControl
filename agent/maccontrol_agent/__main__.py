@@ -88,6 +88,9 @@ class Runtime:
         self.hello_params = dict(hello_ack)
         # Mandatory initial status burst within 2 s of hello_ack (spec 6.3).
         self.telemetry.initial_burst()
+        # First heartbeat one interval after the burst frames (spec 4.2.2
+        # cadence holds from session start, not from telemetry-loop start).
+        self.telemetry.anchor_heartbeat_timer()
         if self.ui:
             self.ui.notify()
 
