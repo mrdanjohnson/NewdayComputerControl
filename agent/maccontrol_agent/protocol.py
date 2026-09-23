@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 MAX_EVENT_BYTES = 4096
 PROTOCOL_VERSION = 1
-AGENT_VERSION = "1.1.1"
+AGENT_VERSION = "1.1.2"
 
 # Closed catalog of the twelve MCA event types (spec 6.2.1 + Phase 4.5
 # amendment: front_app_changed, foreground-app deltas only).

@@ -1,9 +1,11 @@
 # MacControl — Phase 4.5 (MCA telemetry completion: the dynamic half of the §6.3 report)
 
-Status: **implemented 2026-09-23** (A1–A5, folded-in honesty fix, and B1
-accepted; B2/B3/B4 deferred). No acceptance-test gate of its own: exit = the
-verification list below plus AT-06/AT-11 staying green. The gate that matters
-(AT-07) depends on item A5 and the folded-in honesty fix.
+Status: **COMPLETE and hardware-verified 2026-09-23** (A1–A5, folded-in
+honesty fix, and B1 accepted; B2/B3/B4 deferred). No acceptance-test gate of
+its own: exit = the verification list below plus AT-06/AT-11 staying green —
+all met (see the verification section). The gate that matters (AT-07) is
+unblocked: pyobjc is installed in `agent/.venv` (its `screen_lock_changed`
+needs it) and declared-offline windows are wired end-to-end.
 
 ## Implementation log (2026-09-23)
 
@@ -45,9 +47,19 @@ verification list below plus AT-06/AT-11 staying green. The gate that matters
   validation rejects the heartbeat (agent then reads stale — reverts to
   pre-4.5 behavior for that frame class). Probe failure is essentially
   impossible on macOS; noted rather than relaxed.
-- Real OS sleep/wake was not exercised end-to-end (needs actually sleeping
-  the bench Mac); the observer registration and callback path are
-  verified, the wire effects match the contract.
+- Real OS sleep/wake was exercised end-to-end on the bench (2026-09-23,
+  agent 1.1.2) and works: the pre-sleep declaration reaches the endpoint
+  before the network drops and the wake converges to `awake`. Getting there
+  required a watcher rewrite: NSWorkspace sleep notifications **never
+  deliver** in a headless python process (verified — the endpoint saw plain
+  silence, no deltas). The watcher now uses IOKit system power
+  notifications via ctypes (`IORegisterForSystemPower` on a dedicated
+  CFRunLoop thread; needs nothing installed), with the
+  `sleeping`+goodbye frames transmitted before `IOAllowPowerChange` acks.
+  A clock-divergence detector (Mac uptime counts sleep, process monotonic
+  does not) is the wake safety net. Known minor residual: Power Nap dark
+  wakes can double-report `waking`/`awake` (both paths fire); cosmetic,
+  deferred to Phase 5.
 
 ## Why
 
@@ -151,23 +163,36 @@ variant is B4: the agent sends a name inventory, and the Web UI macro tab
 offers "new macro from shortcut" that pre-fills the name and prompts for
 the hotkey. Deferred unless wanted.
 
-## Verification (exit criteria)
+## Verification (exit criteria) — ALL MET 2026-09-23
 
 - `pio test -e native` green (new: heartbeat-payload validation, AgentStatus
   serialization of the new fields, honesty fix in the agent/status builder).
-- `pio run` both envs clean.
+  **119/119.**
+- `pio run` both envs clean. ✅
 - Hardware: `GET /api/v1/agent/status` shows live `system_info` (cpu/mem/
   disk/network samples moving, Mac uptime growing, macOS version, hardware
-  model, Mac IP), `null` lock/user when unknown; manual sleep/wake while
-  paired shows `sleeping` → offline onset classified `expected_offline` →
-  `awake` with fresh uptime and unchanged-vs-changed `boot_id` as
-  appropriate.
-- Heap: no per-sample heap growth (`[heap]` line flat over a 10 min soak);
-  new AgentStatus fields are static.
-- Regression: AT-06 and AT-11 each green once on the Phase 4.5 binary.
-- Optional: `scripts/at13.py` — report-completeness checker (asserts every
-  §6.3 field present/non-null in Mode B with pyobjc installed, honest nulls
-  without).
+  model, Mac IP) — ✅ verified live (cpu 36–39 %, mem 74 %, disk 59.6 GB,
+  network `{reachable, ip}`, uptime_s 6.07 Ms and counting, os_version
+  15.7.4, Mac16,9). Honest lock/user: with pyobjc installed the report
+  carries real values; the null-when-absent path is unit-tested (`?` — the
+  old invented-`false` behavior is gone). Manual sleep/wake while paired:
+  ✅ verified end-to-end (agent 1.1.2) — `system_state_changed: sleeping` +
+  `agent_goodbye(sleep)` reached the endpoint 26 s before offline onset
+  (20:02:00 vs 20:02:41), the declared window armed `expected_offline`,
+  wake returned `awake` with unchanged `boot_id` and continuous uptime.
+  Known minor residual: Power Nap dark wakes can make the clock-divergence
+  safety net emit a duplicate `waking`/`awake` pair alongside the IOKit
+  path's (observed 5 state frames instead of 2 on the bench mini; state
+  converges correctly, no honesty violation). Deferred to Phase 5 polish.
+- Heap: no per-sample heap growth — ✅ 11 min soak, `[heap]` free
+  73.5–74.3 KB (no trend), min/largest/stack HWMs constant, agent
+  heartbeats + 10 s HTTP poll load throughout.
+- Regression: AT-06 and AT-11 each green once on the Phase 4.5 binary. ✅
+  AT-06 all green; AT-11 all green in both rounds (after the app-detection
+  fix, see `docs/DEBUG-PHASE45-AT11.md` — a latent Phase 4 flaw the Phase 4
+  gate got lucky on, fixed in agent 1.1.1).
+- Optional: `scripts/at13.py` — NOT built (optional; the live checks above
+  cover the same assertions).
 
 ## Files touched (expected)
 

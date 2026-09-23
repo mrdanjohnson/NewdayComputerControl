@@ -14,6 +14,7 @@ import subprocess
 import time
 
 from . import protocol
+from .power import WAKE_FOLLOWUP_DELAY_S
 from .state import AgentState
 
 AGENT_REQUESTED_QUIT_WINDOW_S = 30.0
@@ -384,11 +385,58 @@ class Telemetry:
         self._boot_time = get_boot_key()  # epoch sec of Mac boot (kern.boottime)
         self._front_app = None
         self._front_app_seen = False
+        self._clock_prev = None    # (mac_uptime_s, proc_uptime_s) last tick
+        self._loop = None          # asyncio loop, captured in run()
+        self._awake_handle = None  # pending delayed "awake" call_later
         try:
             import AppKit  # noqa: F401
             self._has_nsworkspace = True
         except Exception:
             self._has_nsworkspace = False
+
+    # -- sleep/wake safety net ----------------------------------------------
+
+    def detect_sleep_from_clocks(self):
+        """Clock-divergence wake detector (belt-and-suspenders, Phase 4.5).
+
+        Mac uptime (kern.boottime-derived) counts time spent asleep; the
+        process monotonic clock does not. A >10 s jump in the per-tick
+        delta-of-deltas means the Mac slept and woke without the SleepWatcher
+        reporting it (e.g. its wake frame was lost). Deliberately does NOT
+        fabricate a retroactive sleeping/goodbye — pre-sleep declaration is
+        only possible from the IOKit WillSleep path.
+        """
+        if not self._boot_time:
+            return
+        mac_now = int(time.time()) - self._boot_time
+        proc_now = int(time.monotonic() - self.rt.started_monotonic)
+        prev = self._clock_prev
+        self._clock_prev = (mac_now, proc_now)
+        if prev is None:
+            return
+        drift = (mac_now - prev[0]) - (proc_now - prev[1])
+        if drift <= 10:
+            return
+        last = getattr(self.rt, "last_wake_reported_at", 0.0)
+        if time.monotonic() - last < 30:
+            return  # SleepWatcher already reported this episode
+        self.rt.last_wake_reported_at = time.monotonic()
+        self.rt.log("detected sleep/wake from clock divergence (%ds); "
+                    "SleepWatcher did not report it" % drift)
+        self.rt.enqueue("system_state_changed", {"state": "waking"})
+        self._schedule_awake()
+
+    def _schedule_awake(self):
+        """Single outstanding delayed 'awake', 5 s after a waking event."""
+        if self._awake_handle is not None:
+            self._awake_handle.cancel()
+        if self._loop is not None:
+            self._awake_handle = self._loop.call_later(
+                WAKE_FOLLOWUP_DELAY_S, self._emit_awake)
+
+    def _emit_awake(self):
+        self._awake_handle = None
+        self.rt.enqueue("system_state_changed", {"state": "awake"})
 
     # -- producers ---------------------------------------------------------
 
@@ -514,6 +562,7 @@ class Telemetry:
 
     async def run(self):
         import asyncio
+        self._loop = asyncio.get_event_loop()
         if not self._last_hb:
             self._last_hb = time.monotonic()
         while not self.rt.stop_event.is_set():
@@ -522,6 +571,7 @@ class Telemetry:
                 self.emit_app_deltas()
                 self.emit_lock_user_deltas()
                 self.emit_front_app_delta()
+                self.detect_sleep_from_clocks()
             except Exception as exc:  # telemetry must never kill the agent
                 self.rt.log("telemetry error: %s" % exc)
             try:

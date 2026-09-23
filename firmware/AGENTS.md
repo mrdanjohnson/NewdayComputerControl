@@ -30,7 +30,8 @@ in `.venv` themselves. The Mac agent runs from `../agent` with its own venv
 - `test/native/` — host tests; extend when you change `lib/` behavior.
 - `scripts/` — acceptance runners (`at*.py`, `mc_http.py` keep-alive helper,
   `serial_cli.py`). Gates need **two consecutive green runs on one boot**.
-- `docs/` — PHASE1–4 logs, `HANDOFF.md`, `DEBUG-PHASE4-AT11.md`.
+- `docs/` — PHASE1–4.5 logs, `HANDOFF.md`, `DEBUG-PHASE4-AT11.md`,
+  `DEBUG-PHASE45-AT11.md`.
 
 ## Hard-won constraints (violating these has cost reboots)
 

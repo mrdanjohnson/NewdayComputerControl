@@ -13,11 +13,20 @@ See `../maccontrol_spec.agent.final.md` for the normative protocol (chapters
 
 Requires macOS with Python 3.9+ (system python3 is fine).
 
+**Recommended: the one-shot installer** (`install.sh`) — creates the venv,
+installs dependencies, optionally pairs with the endpoint, writes your
+configuration, and installs a LaunchAgent so the agent starts at login:
+
 ```sh
 cd agent
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+./install.sh --hostname maccontrol-01 --pair-code ABC234XY \
+    --allow com.apple.Terminal com.apple.Safari \
+    --enable-launch --enable-quit
 ```
+
+Re-running `./install.sh` reconfigures the agent and restarts the LaunchAgent;
+`./install.sh --help` lists all options (allowlist, action enable/disable,
+transport, headless, uninstall). The steps below remain for manual setups.
 
 Run once in the foreground to pair and verify:
 
@@ -97,10 +106,13 @@ validated against `^[A-Za-z0-9.-]+$` before any interpolation.
 Screen-lock detection uses the well-known `CGSessionCopyCurrentDictionary`
 snippet via pyobjc (`pip install pyobjc-framework-Quartz` into the venv). **Without
 pyobjc the agent still runs**, but `screen_lock_changed` events are not emitted
-(lock state is reported as undetectable) and sleep/wake observation is
-unavailable. App detection does NOT use pyobjc: it is psutil-primary
-(exe-path prefix match against the mdfind-resolved .app path), falling back
-to sparse `mdfind`/`pgrep` polling only when psutil is missing.
+(lock state is reported as undetectable) and `front_app_changed` is skipped.
+Sleep/wake does NOT use pyobjc: it is IOKit system power notifications via
+ctypes (power.py) — the daemon-grade mechanism (Mach port on a CFRunLoop,
+delivered pre-sleep, no LaunchServices/distributed-notification dependency),
+needing nothing installed. App detection does NOT use pyobjc either: it is
+psutil-primary (exe-path prefix match against the mdfind-resolved .app path),
+falling back to sparse `mdfind`/`pgrep` polling only when psutil is missing.
 
 ## Transport fallback
 
@@ -122,12 +134,22 @@ to sparse `mdfind`/`pgrep` polling only when psutil is missing.
 
 ## Phase 4.5 scope / known gaps
 
-- **Sleep/wake is detected when pyobjc is installed** (Phase 4.5): an
-  NSWorkspace notification observer (power.py) emits
-  `system_state_changed` `sleeping` / `waking` / `awake` deltas and declares
-  the sleep an expected-offline via the goodbye path, so a commanded sleep
-  reads as `expected_offline`, not fault. Without pyobjc the watcher is a
-  no-op and system state stays "awake" while the agent runs, as before.
+- **Sleep/wake detection (Phase 4.5, IOKit rewrite 2026-09-23)**: power.py
+  registers for IOKit system power notifications via ctypes
+  (`IORegisterForSystemPower`, Mach notification port on a dedicated
+  thread's CFRunLoop) and emits `system_state_changed`
+  `sleeping` / `waking` / `awake` deltas, declaring the sleep an
+  expected-offline via the goodbye path so a commanded sleep reads as
+  `expected_offline`, not fault. Pre-sleep frames are guaranteed enqueued
+  before `IOAllowPowerChange` (bounded cross-thread handshake). The earlier
+  NSWorkspace-based observer never fired in the headless process (no
+  NSRunLoop) and was removed. Needs nothing installed — pure ctypes — but
+  any setup failure degrades to a logged no-op, agent unaffected. As a
+  safety net, the Telemetry loop also detects wakes from clock divergence
+  (Mac uptime counts sleep, process monotonic does not) and emits `waking`
+  if the IOKit path missed an episode; it deliberately never fabricates a
+  retroactive `sleeping`/goodbye — pre-sleep declaration is only possible
+  from the IOKit path.
 - **Composite heartbeat (spec 6.3.1)**: heartbeats now carry `boot_time`,
   Mac `mac_uptime_s`, `cpu_utilization_pct`, `memory_utilization_pct`,
   `disk_free_bytes`, and a `network` `{reachable, ip}` object (routing-table
@@ -141,8 +163,9 @@ to sparse `mdfind`/`pgrep` polling only when psutil is missing.
   detection included; deltas only, never in the initial burst. Requires
   pyobjc; silently skipped without it. Relies on NSWorkspace and may lag in
   headless (no NSRunLoop) contexts — best-effort, unlike app detection.
-- **Without pyobjc**, screen-lock detection and sleep/wake observation are
-  unavailable and load samples depend on the subprocess fallbacks above.
+- **Without pyobjc**, screen-lock detection and `front_app_changed` are
+  unavailable and load samples depend on the subprocess fallbacks above
+  (sleep/wake is unaffected — it uses ctypes/IOKit, no pyobjc needed).
   **Without psutil**, app state detection degrades to best-effort
   `mdfind`/`pgrep` polling (misses are possible). Install
   `pyobjc-framework-Quartz` / `pyobjc-framework-Cocoa` (and `psutil`) into

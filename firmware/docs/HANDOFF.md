@@ -6,17 +6,24 @@ phase doc for the work at hand. Project root:
 
 ## Phase 5 kickoff (current state — start here)
 
-> **Phase 4.5 is COMPLETE (2026-09-23)** — MCA telemetry completion per
-> `docs/PHASE4.5.md`: full §6.3 `system_info` report on both sides (load
-> samples, Mac uptime/boot_time, os_version/hardware_model, network
-> reachability+IP), NSWorkspace sleep/wake with declared-offline windows
-> (`CommandEngine::on_agent_declared_offline`), `front_app_changed` (B1),
-> the `/api/v1/agent/status` honesty fix, and pyobjc/psutil installed in
-> `agent/.venv` (unblocks AT-07's `screen_lock_changed`). B2/B3/B4
-> deferred. 119 native tests; both envs compile. Hardware verification
-> (live `system_info`, sleep/wake, heap soak, AT-06/AT-11 regression) is
-> tracked in `docs/PHASE4.5.md` — the Phase 4.5 binary was flashed to the
-> bench S3 on 2026-09-23.
+> **2026-09-23 (late): Phase 4.5 is COMPLETE and hardware-verified.** MCA
+> telemetry per `docs/PHASE4.5.md`: full §6.3 `system_info` report on both
+> sides (load samples, Mac uptime/boot_time, os_version/hardware_model,
+> network reachability+IP), IOKit-based sleep/wake with declared-offline
+> windows verified against a real sleep (`CommandEngine::
+> on_agent_declared_offline`), `front_app_changed` (B1), the
+> `/api/v1/agent/status` honesty fix, pyobjc/psutil in `agent/.venv`.
+> **AT-06 all green + AT-11 all green in both rounds on the Phase 4.5
+> binary; 11-min heap soak flat (free 73.5–74.3 KB, min/largest constant).**
+> B2/B3/B4 deferred. Agent is at **v1.1.2** (1.1.0 = Phase 4.5 telemetry,
+> 1.1.1 = app-detection fix, 1.1.2 = IOKit sleep/wake — see
+> `docs/DEBUG-PHASE45-AT11.md` for the latent Phase 4 NSWorkspace-staleness
+> flaw the Phase 4 gate got lucky on). 119 native tests; both envs compile;
+> bench S3 flashed with the Phase 4.5 binary. Residual watch items: wake
+> deltas can double-report on Power Nap dark wakes (cosmetic); the stale
+> pid on not-running apps in `/agent/status` applications map (spec-9
+> question). **Next: Phase 5 — AT-07/08/09 (verified lifecycle; power-command
+> predicates, expected-offline AT coverage).**
 
 > **Numbering note:** the PRD (§17.2) counts six phases with the MCA work as
 > its Phase 3; this repo's docs count it as Phase 4. So the repo's
@@ -36,13 +43,11 @@ Phase 4 is **COMPLETE and gate-verified** (AT-06 + AT-11 ×2 consecutive,
 1. **Power-command verification predicates** — make power/lock/macro
    commands verifiable in Mode B (currently honest `unconfirmed`/`hid_only`;
    every capabilities `verified` flag stays false except app_launch/app_quit).
-2. **Expected-offline windows (§8)** — full sleep/restart/shutdown flow:
-   `agent_goodbye` with a declared window already exists on both sides
-   (`AgentSession::GoingAway = 1001`, engine keeps records inside the
-   window from the offline sweep at `mc_engine.cpp:266`, agent
-   `declare_expected_offline` in `agent/maccontrol_agent/__main__.py`);
-   what remains is the controller-facing predicate wiring and the AT
-   coverage.
+2. **Expected-offline windows (§8)** — controller-facing wiring DONE in
+   Phase 4.5 (`CommandEngine::on_agent_declared_offline`, goodbye reasons
+   sleep/restart/shutdown mark confirming records with the 3/60 s window;
+   agent declares via IOKit sleep detection + the existing goodbye path).
+   Verified against a real sleep. What remains: the AT coverage (AT-08).
 3. **AT-07/AT-08/AT-09** acceptance scripts.
 
 Pre-flagged Phase 5 cleanups and watch items:
