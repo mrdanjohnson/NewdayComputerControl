@@ -1,8 +1,82 @@
-# MacControl — Phase 2 Handoff (resume document)
+# MacControl — project handoff (resume document)
 
-Read this first in the new session. It contains everything needed to finish
-Phase 2 without re-deriving context. Project root:
+Read this first in a new session, then `firmware/AGENTS.md`, then the
+phase doc for the work at hand. Project root:
 `/Users/danieljohnson/Public/ESP32-MCA Command Loop Design/`
+
+## Phase 5 kickoff (current state — start here)
+
+> **Run `docs/PHASE4.5.md` first** (MCA telemetry completion — the §6.3
+> `system_info` report, true uptime, sleep/wake detection, and the
+> `/api/v1/agent/status` honesty fix). It is scoped but not started; its
+> A5 item and the pyobjc install unblock AT-07. This section is Phase 5
+> proper.
+
+> **Numbering note:** the PRD (§17.2) counts six phases with the MCA work as
+> its Phase 3; this repo's docs count it as Phase 4. So the repo's
+> "Phase 5" = PRD Phase 4 "Verified lifecycle" (AT-07–AT-09) and the repo's
+> "Phase 6" = PRD Phase 5 "Production hardening" (AT-10, AT-12). After
+> Phase 6 the MVP is complete: **Milestone 2 gate = AT-06 through AT-12
+> all green** (PRD §17.2; the PRD's old Phase 7/AI was removed). The PRD
+> also warns: the determinism defaults (heartbeat 5 s, stale 15 s,
+> offline 30 s, backoff 1/2/4/8/30 s) are AT inputs — changing them
+> invalidates AT-06…AT-12.
+
+Phase 4 is **COMPLETE and gate-verified** (AT-06 + AT-11 ×2 consecutive,
+2026-09-23, see the banner history below and
+`firmware/docs/DEBUG-PHASE4-AT11.md`). Phase 5 scope per
+`firmware/docs/PHASE4.md` "Fixed / deferred":
+
+1. **Power-command verification predicates** — make power/lock/macro
+   commands verifiable in Mode B (currently honest `unconfirmed`/`hid_only`;
+   every capabilities `verified` flag stays false except app_launch/app_quit).
+2. **Expected-offline windows (§8)** — full sleep/restart/shutdown flow:
+   `agent_goodbye` with a declared window already exists on both sides
+   (`AgentSession::GoingAway = 1001`, engine keeps records inside the
+   window from the offline sweep at `mc_engine.cpp:266`, agent
+   `declare_expected_offline` in `agent/maccontrol_agent/__main__.py`);
+   what remains is the controller-facing predicate wiring and the AT
+   coverage.
+3. **AT-07/AT-08/AT-09** acceptance scripts.
+
+Pre-flagged Phase 5 cleanups and watch items:
+
+- **Engine deadline/coalesce arithmetic is epoch-based** — fine post-SNTP
+  but wrong across the sync jump; convert to `IClock::millis()` (flagged in
+  the conventions list below).
+- **Duplicate-result handling**: one gate run was lost to a macOS-stalled
+  `osascript` quit (10 s `ACTION_TIMEOUT_S`) whose redelivered duplicate
+  reported `failed` and overwrote a completed record. Rare — but the PRD
+  forbids this: "once any command reaches a terminal state the record is
+  never reopened" (§5, ch. 5/line ~444) and "a command_result arriving
+  after its command timed out ... MUST NOT reopen a terminal ledger
+  record" (§6). If the engine truly accepted a result for a terminal
+  command that is a PRD MUST-violation, not a flake: conformance-check
+  result admission in Phase 5 before AT-07+ touches dispatch.
+- **Heap/stack knobs** (measured 2026-09-23): `[heap]` shows http task HWM
+  21 KB of 40 KB — the mc_http stack can likely trim to ~28 KB; the `[heap]`
+  diagnostic itself (30 s, with stack HWMs) is still enabled — decide its
+  retirement during Phase 5 soaks.
+- Agent gaps (README): OS sleep/wake notifications and the full 5-view UI
+  are later phases; screen-lock detection needs pyobjc.
+- Bench: S3 device `mac-b53478.local`, port `/dev/cu.usbmodem5CBD0148591`.
+  Re-run the Phase 4 gate any time with the commands in the 2026-09-23
+  banner below.
+- **`/api/v1/agent/status` invents `screen_locked: false` and
+  `user.logged_in: false` when the evidence is absent** (handler sets
+  `false` when `has_lock`/`has_user` are false — its own comment says
+  "absent fields are null, never invented"). On a Mac without pyobjc the
+  report claims a known lock state it does not have. Fix alongside AT-07.
+- **Composite MCA report (spec 6.3) is skeletal**: the agent's heartbeat
+  carries only `{boot_id, uptime_s}` — no cpu/memory/disk/network samples,
+  and `uptime_s` is AGENT-process uptime, not Mac uptime. The endpoint
+  drops `os_version`/`hardware_model` from the capability_report (validated
+  then discarded) and has no AgentStatus fields for the dynamic
+  `system_info` fields — `/api/v1/agent/status` therefore never reports
+  them. Sleep/wake detection is likewise absent (system_state is always
+  "awake" while the agent runs; no NSWorkspace notifications), so an
+  unexpected sleep is indistinguishable from a fault. None of this is
+  gated by AT-07–AT-09; decide in Phase 5 whether closing it is in scope.
 
 > **2026-09-23: Phase 4 GATE PASSED — the "degrading bench" was firmware.**
 > AT-06 all green + AT-11 all green **twice consecutively on one boot**.
@@ -76,7 +150,7 @@ is done.
 
 - Phase 1 + Phase 2 firmware, both envs compile clean:
   - `firmware/` — `pio run -e esp32-s3-devkitc-1` and `-e esp32-wroom-32`
-- Native test suite: **85/85 green** (`cd firmware && ./.venv/bin/pio test -e native`)
+- Native test suite: **114/114 green** (`cd firmware && ./.venv/bin/pio test -e native`)
 - Live smoke on the ESP-WROOM-32 verified: macro CRUD/execute, triggers, Web
   UI login/session/lockout, identity update, persistence across reboot, §14.3
   UI labels, closed-surface 404s.
@@ -146,7 +220,7 @@ is done.
 ```bash
 cd "…/ESP32-MCA Command Loop Design/firmware"
 python3 -m venv .venv && ./.venv/bin/pip install platformio   # if .venv missing
-./.venv/bin/pio test -e native          # 85/85 expected
+./.venv/bin/pio test -e native          # 114/114 expected
 ./.venv/bin/pio run -e esp32-s3-devkitc-1
 ```
 
@@ -256,5 +330,6 @@ python3 -m venv .venv && ./.venv/bin/pip install platformio   # if .venv missing
   `launchd/com.maccontrol.agent.plist`, README
 - `firmware/scripts/at01_at02.py`, `at03_at04.py`, `at05.py`, `at06.py`,
   `at11.py` — acceptance runners
-- `firmware/docs/PHASE1.md`, `PHASE2.md`, `PHASE3.md`, `PHASE4.md` —
-  build/verify guides + bring-up logs
+- `firmware/docs/PHASE1.md` … `PHASE4.5.md` (PHASE5/6 pending) —
+  per-phase build/verify guides + bring-up logs (`PHASE4.5.md` is the
+  current next step)
