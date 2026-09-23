@@ -593,10 +593,16 @@ async function createKey(){
   el('keymsg').innerHTML='';el('keyonce').innerHTML='';
   try{
     var k=await api('/api/v1/keys','POST',{role:el('k-role').value,label:el('k-label').value});
-    el('keyonce').innerHTML='<div class="ok">Key <b>'+esc(k.key_id)+'</b> created. Copy it now — it is shown exactly once:<br><code>'+esc(k.key)+'</code></div>';
     el('k-label').value='';
-    refreshKeys();
+    await refreshKeys();  // refresh BEFORE showing the secret: refreshKeys clears #keyonce
+    el('keyonce').innerHTML='<div class="ok">Key <b>'+esc(k.key_id)+'</b> created. Copy it now — it is shown exactly once:<br><code>'+esc(k.key)+'</code> <button class="sm" onclick="copyKey(this,\''+esc(k.key)+'\')">Copy</button></div>';
   }catch(e){showErr('keymsg',e);}
+}
+function copyKey(btn,key){
+  var done=function(){btn.textContent='Copied';setTimeout(function(){btn.textContent='Copy';},2000);};
+  var fallback=function(){var ta=document.createElement('textarea');ta.value=key;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');}catch(e){}document.body.removeChild(ta);done();};
+  if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(key).then(done,fallback);
+  else fallback();
 }
 async function revokeKey(id){
   if(!confirm('Revoke key '+id+'? Controllers using it lose access immediately.'))return;

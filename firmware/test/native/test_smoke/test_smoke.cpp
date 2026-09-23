@@ -155,6 +155,80 @@ TEST(Smoke, StatusModeBProvenanceAndFreshness) {
     EXPECT_FALSE(doc["connection"]["agent"]["value"].as<bool>());
 }
 
+TEST(Smoke, AgentSystemInfoRendering) {
+    mcco::AgentStatus st;
+    JsonDocument doc;
+
+    // Full evidence: every leaf present, disk survives >2^31.
+    st.has_sysinfo = true;
+    st.sysinfo_at = 1736848810;
+    st.cpu_pct = 12.5;
+    st.mem_pct = 45;
+    st.disk_free_bytes = 200000000000ULL;
+    st.net_reachable = true;
+    st.net_ip = "10.0.0.2";
+    st.has_mac_uptime = true;
+    st.mac_uptime_s = 86400;
+    st.boot_time = 1736762400;
+    st.has_capability = true;
+    st.os_version = "14.3";
+    st.hardware_model = "Mac14,9";
+    st.has_front_app = true;
+    st.front_app = "com.example.app";
+    doc.clear();
+    mcco::build_agent_system_info(doc["system_info"].to<JsonObject>(), st);
+    EXPECT_DOUBLE_EQ(doc["system_info"]["cpu_utilization_pct"].as<double>(), 12.5);
+    EXPECT_DOUBLE_EQ(doc["system_info"]["memory_utilization_pct"].as<double>(), 45.0);
+    EXPECT_EQ((long long)doc["system_info"]["disk_free_bytes"].as<long long>(), 200000000000LL);
+    EXPECT_TRUE(doc["system_info"]["network"]["reachable"].as<bool>());
+    EXPECT_EQ(std::string(doc["system_info"]["network"]["ip"] | "?"), "10.0.0.2");
+    EXPECT_EQ((long long)doc["system_info"]["uptime_s"].as<long long>(), 86400);
+    EXPECT_EQ((long long)doc["system_info"]["boot_time"].as<long long>(), 1736762400);
+    EXPECT_EQ(std::string(doc["system_info"]["os_version"] | "?"), "14.3");
+    EXPECT_EQ(std::string(doc["system_info"]["hardware_model"] | "?"), "Mac14,9");
+    EXPECT_EQ(std::string(doc["system_info"]["front_app"] | "?"), "com.example.app");
+
+    // Partial: sysinfo only; everything else null. Empty net_ip renders null.
+    mcco::AgentStatus partial;
+    partial.has_sysinfo = true;
+    partial.net_reachable = false;  // net_ip stays empty -> null
+    doc.clear();
+    mcco::build_agent_system_info(doc["system_info"].to<JsonObject>(), partial);
+    EXPECT_TRUE(doc["system_info"]["network"]["reachable"].is<bool>());
+    EXPECT_TRUE(doc["system_info"]["network"]["ip"].isNull());
+    EXPECT_TRUE(doc["system_info"]["uptime_s"].isNull());
+    EXPECT_TRUE(doc["system_info"]["boot_time"].isNull());
+    EXPECT_TRUE(doc["system_info"]["os_version"].isNull());
+    EXPECT_TRUE(doc["system_info"]["hardware_model"].isNull());
+    EXPECT_TRUE(doc["system_info"]["front_app"].isNull());
+
+    // None: all leaves null, network object present with null members.
+    mcco::AgentStatus none;
+    doc.clear();
+    mcco::build_agent_system_info(doc["system_info"].to<JsonObject>(), none);
+    EXPECT_TRUE(doc["system_info"]["cpu_utilization_pct"].isNull());
+    EXPECT_TRUE(doc["system_info"]["memory_utilization_pct"].isNull());
+    EXPECT_TRUE(doc["system_info"]["disk_free_bytes"].isNull());
+    EXPECT_TRUE(doc["system_info"]["network"]["reachable"].isNull());
+    EXPECT_TRUE(doc["system_info"]["network"]["ip"].isNull());
+    EXPECT_TRUE(doc["system_info"]["uptime_s"].isNull());
+    EXPECT_TRUE(doc["system_info"]["boot_time"].isNull());
+    EXPECT_TRUE(doc["system_info"]["os_version"].isNull());
+    EXPECT_TRUE(doc["system_info"]["hardware_model"].isNull());
+    EXPECT_TRUE(doc["system_info"]["front_app"].isNull());
+
+    // Frontmost-app-cleared (null bundle_id) and capability-without-strings
+    // still render honest nulls.
+    mcco::AgentStatus cleared;
+    cleared.has_front_app = true;   // front_app empty = none
+    cleared.has_capability = true;  // strings empty = null
+    doc.clear();
+    mcco::build_agent_system_info(doc["system_info"].to<JsonObject>(), cleared);
+    EXPECT_TRUE(doc["system_info"]["front_app"].isNull());
+    EXPECT_TRUE(doc["system_info"]["os_version"].isNull());
+    EXPECT_TRUE(doc["system_info"]["hardware_model"].isNull());
+}
+
 TEST(Smoke, CapabilitiesModeBHonesty) {
     mcco::Identity id{"ProPresenter Mac", "mac-a1b2c3", "", "", "a1b2c3d4e5f6"};
     mcco::AgentStatus agent;

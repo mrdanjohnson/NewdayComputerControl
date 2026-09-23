@@ -153,6 +153,50 @@ void build_status_mode_a(JsonDocument& doc, const Identity& id, bool usb_up,
                  nullptr, now, cache_epoch);
 }
 
+void build_agent_system_info(JsonObject out, const AgentStatus& st) {
+    // §6.3 system_info: absent evidence renders null, never invented. `uptime_s`
+    // is the Mac uptime (heartbeat mac_uptime_s), NOT the agent heartbeat's own
+    // uptime_s — see the OpenAPI amendment note (Phase 4.5 A2 relabeling).
+    if (st.has_sysinfo) {
+        out["cpu_utilization_pct"] = st.cpu_pct;
+        out["memory_utilization_pct"] = st.mem_pct;
+        out["disk_free_bytes"] = st.disk_free_bytes;
+        JsonObject net = out["network"].to<JsonObject>();
+        net["reachable"] = st.net_reachable;
+        if (st.net_ip.empty()) net["ip"] = nullptr;
+        else net["ip"] = st.net_ip.c_str();
+    } else {
+        out["cpu_utilization_pct"] = nullptr;
+        out["memory_utilization_pct"] = nullptr;
+        out["disk_free_bytes"] = nullptr;
+        JsonObject net = out["network"].to<JsonObject>();
+        net["reachable"] = nullptr;
+        net["ip"] = nullptr;
+    }
+    if (st.has_mac_uptime) {
+        out["uptime_s"] = st.mac_uptime_s;
+        out["boot_time"] = st.boot_time;
+    } else {
+        out["uptime_s"] = nullptr;
+        out["boot_time"] = nullptr;
+    }
+    if (st.has_capability && !st.os_version.empty()) {
+        out["os_version"] = st.os_version.c_str();
+    } else {
+        out["os_version"] = nullptr;
+    }
+    if (st.has_capability && !st.hardware_model.empty()) {
+        out["hardware_model"] = st.hardware_model.c_str();
+    } else {
+        out["hardware_model"] = nullptr;
+    }
+    if (st.has_front_app && !st.front_app.empty()) {
+        out["front_app"] = st.front_app.c_str();
+    } else {
+        out["front_app"] = nullptr;
+    }
+}
+
 static void cmd_entry(JsonObject cmds, const char* name, bool available, bool verified,
                       int deadline_s) {
     JsonObject e = cmds[name].to<JsonObject>();

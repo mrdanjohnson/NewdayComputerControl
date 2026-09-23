@@ -6,11 +6,17 @@ phase doc for the work at hand. Project root:
 
 ## Phase 5 kickoff (current state — start here)
 
-> **Run `docs/PHASE4.5.md` first** (MCA telemetry completion — the §6.3
-> `system_info` report, true uptime, sleep/wake detection, and the
-> `/api/v1/agent/status` honesty fix). It is scoped but not started; its
-> A5 item and the pyobjc install unblock AT-07. This section is Phase 5
-> proper.
+> **Phase 4.5 is COMPLETE (2026-09-23)** — MCA telemetry completion per
+> `docs/PHASE4.5.md`: full §6.3 `system_info` report on both sides (load
+> samples, Mac uptime/boot_time, os_version/hardware_model, network
+> reachability+IP), NSWorkspace sleep/wake with declared-offline windows
+> (`CommandEngine::on_agent_declared_offline`), `front_app_changed` (B1),
+> the `/api/v1/agent/status` honesty fix, and pyobjc/psutil installed in
+> `agent/.venv` (unblocks AT-07's `screen_lock_changed`). B2/B3/B4
+> deferred. 119 native tests; both envs compile. Hardware verification
+> (live `system_info`, sleep/wake, heap soak, AT-06/AT-11 regression) is
+> tracked in `docs/PHASE4.5.md` — the Phase 4.5 binary was flashed to the
+> bench S3 on 2026-09-23.
 
 > **Numbering note:** the PRD (§17.2) counts six phases with the MCA work as
 > its Phase 3; this repo's docs count it as Phase 4. So the repo's
@@ -62,21 +68,17 @@ Pre-flagged Phase 5 cleanups and watch items:
 - Bench: S3 device `mac-b53478.local`, port `/dev/cu.usbmodem5CBD0148591`.
   Re-run the Phase 4 gate any time with the commands in the 2026-09-23
   banner below.
-- **`/api/v1/agent/status` invents `screen_locked: false` and
-  `user.logged_in: false` when the evidence is absent** (handler sets
-  `false` when `has_lock`/`has_user` are false — its own comment says
-  "absent fields are null, never invented"). On a Mac without pyobjc the
-  report claims a known lock state it does not have. Fix alongside AT-07.
-- **Composite MCA report (spec 6.3) is skeletal**: the agent's heartbeat
-  carries only `{boot_id, uptime_s}` — no cpu/memory/disk/network samples,
-  and `uptime_s` is AGENT-process uptime, not Mac uptime. The endpoint
-  drops `os_version`/`hardware_model` from the capability_report (validated
-  then discarded) and has no AgentStatus fields for the dynamic
-  `system_info` fields — `/api/v1/agent/status` therefore never reports
-  them. Sleep/wake detection is likewise absent (system_state is always
-  "awake" while the agent runs; no NSWorkspace notifications), so an
-  unexpected sleep is indistinguishable from a fault. None of this is
-  gated by AT-07–AT-09; decide in Phase 5 whether closing it is in scope.
+- **`/api/v1/agent/status` honesty — FIXED in Phase 4.5 (2026-09-23):**
+  `logged_in`/`screen_locked` now render `null` when the evidence is
+  absent; the endpoint no longer invents a known lock state. (Original
+  watch item: handler set `false` when `has_lock`/`has_user` were false.)
+- **Composite MCA report (spec 6.3) — IMPLEMENTED in Phase 4.5
+  (2026-09-23):** heartbeat now carries load samples / `boot_time` /
+  `mac_uptime_s` / network; capability_report keeps `os_version` and adds
+  `hardware_model`; `/api/v1/agent/status` renders the full `system_info`
+  section; sleep/wake detection via NSWorkspace marks a declared sleep
+  `expected_offline` (not fault). See `docs/PHASE4.5.md` implementation
+  log. Remaining agent gaps (README): the full 5-view UI is a later phase.
 
 > **2026-09-23: Phase 4 GATE PASSED — the "degrading bench" was firmware.**
 > AT-06 all green + AT-11 all green **twice consecutively on one boot**.
@@ -150,7 +152,7 @@ is done.
 
 - Phase 1 + Phase 2 firmware, both envs compile clean:
   - `firmware/` — `pio run -e esp32-s3-devkitc-1` and `-e esp32-wroom-32`
-- Native test suite: **114/114 green** (`cd firmware && ./.venv/bin/pio test -e native`)
+- Native test suite: **119/119 green** (`cd firmware && ./.venv/bin/pio test -e native`)
 - Live smoke on the ESP-WROOM-32 verified: macro CRUD/execute, triggers, Web
   UI login/session/lockout, identity update, persistence across reboot, §14.3
   UI labels, closed-surface 404s.

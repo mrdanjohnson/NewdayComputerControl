@@ -1,9 +1,53 @@
 # MacControl — Phase 4.5 (MCA telemetry completion: the dynamic half of the §6.3 report)
 
-Status: **planned** (scoped 2026-09-23 from the feedback-gap survey; runs
-before Phase 5). No acceptance-test gate of its own: exit = the verification
-list below plus AT-06/AT-11 staying green. The gate that matters (AT-07)
-depends on item A5 and the folded-in honesty fix.
+Status: **implemented 2026-09-23** (A1–A5, folded-in honesty fix, and B1
+accepted; B2/B3/B4 deferred). No acceptance-test gate of its own: exit = the
+verification list below plus AT-06/AT-11 staying green. The gate that matters
+(AT-07) depends on item A5 and the folded-in honesty fix.
+
+## Implementation log (2026-09-23)
+
+- **Wire contract (both sides, exact keys):** heartbeat now carries
+  `{boot_id, uptime_s, boot_time, mac_uptime_s, cpu_utilization_pct,
+  memory_utilization_pct, disk_free_bytes, network{reachable, ip}}`
+  (load samples nullable; `uptime_s` stays AGENT uptime, `mac_uptime_s`
+  is Mac uptime). `capability_report` gains required `hardware_model`.
+  New 12th event `front_app_changed{bundle_id: string-or-null}` (B1).
+  `agent_goodbye` payload unchanged — reasons sleep/restart/shutdown now
+  also mark windowless confirming records with the spec 5.3.2
+  expected-offline window (3/60 s) via new
+  `CommandEngine::on_agent_declared_offline()`, so a declared sleep is not
+  swept to `unconfirmed` at offline onset.
+- **Agent** (`agent/maccontrol_agent/`): `SystemSampler` (psutil first,
+  `top`/`vm_stat`+`sysctl hw.memsize`/`df -k` fallbacks, `route -n get
+  default` + `ipconfig getifaddr` for network — zero outbound traffic,
+  null on failure); `get_hardware_model()`; `power.py` `SleepWatcher`
+  (NSWorkspace WillSleep/DidWake on a dedicated NSRunLoop thread, all
+  effects bounced via `loop.call_soon_threadsafe`; will-sleep →
+  `system_state_changed(sleeping)` + `declare_expected_offline("sleep")`;
+  did-wake → `waking` then `awake` ~5 s later; no-op without pyobjc);
+  frontmost-app delta on the 3 s monitor cadence; agent version 1.1.0.
+  `agent/.venv` now has psutil 7.2.2 + pyobjc 12.2.2 (cp314 wheels) —
+  this unblocks AT-07's `screen_lock_changed`.
+- **Firmware:** `AgentStatus` system_info fields (POD + change-only string
+  assignment — no per-heartbeat heap churn); validation in
+  `mc_agent_events.cpp`; `applyEvidence` storage incl. Goodbye →
+  declared-offline marking; `build_agent_system_info()` in `mc_status.cpp`
+  (renders all-null when evidence absent); `/api/v1/agent/status` honesty
+  fix (`logged_in`/`screen_locked` now `null`, never invented `false`) and
+  the `system_info` section; OpenAPI amendment note (incl. the A2
+  agent-uptime vs Mac-uptime relabeling and the B1 §11 amendment).
+  114 → **119 native tests** (`TwelveTypesAllValidate` replaced
+  `ElevenTypesAllValidate`; new heartbeat/capability/front_app validation,
+  system_info rendering, declared-offline engine tests).
+- **Known residual:** if the agent's `kern.boottime` probe itself fails it
+  sends `boot_time`/`mac_uptime_s` as null and the strict-int firmware
+  validation rejects the heartbeat (agent then reads stale — reverts to
+  pre-4.5 behavior for that frame class). Probe failure is essentially
+  impossible on macOS; noted rather than relaxed.
+- Real OS sleep/wake was not exercised end-to-end (needs actually sleeping
+  the bench Mac); the observer registration and callback path are
+  verified, the wire effects match the contract.
 
 ## Why
 

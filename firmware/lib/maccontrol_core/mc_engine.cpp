@@ -286,6 +286,28 @@ size_t CommandEngine::on_agent_offline() {
     return n;
 }
 
+size_t CommandEngine::on_agent_declared_offline() {
+    // A declared sleep/restart/shutdown (agent_goodbye) means channel loss is
+    // expected: mark every confirming record with the spec 5.3.2 window so the
+    // offline sweep in on_agent_offline() leaves it alone.
+    size_t n = 0;
+    std::vector<std::string> ids;
+    for (const CommandRecord* rec : ledger_.list_newest_first()) {
+        if (rec->state == CommandState::Confirming && !rec->has_window)
+            ids.push_back(rec->command_id);
+    }
+    for (const std::string& id : ids) {
+        const CommandRecord* cur = ledger_.latest(id);
+        if (!cur || cur->state != CommandState::Confirming || cur->has_window) continue;
+        CommandRecord next = *cur;
+        next.has_window = true;
+        next.window_open_after_s = 3;   // spec 5.3.2 defaults
+        next.window_close_after_s = 60;
+        if (ledger_.append_revision(next)) n++;
+    }
+    return n;
+}
+
 bool CommandEngine::agent_event(const AgentEvent& ev) {
     if (ev.type != AgentEventType::CommandAck && ev.type != AgentEventType::CommandResult &&
         ev.type != AgentEventType::ApplicationStarted &&

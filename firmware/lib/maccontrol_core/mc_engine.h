@@ -97,6 +97,12 @@ public:
     // unconfirmed/evidence_lost (spec 5.2.1). Returns the number advanced.
     size_t on_agent_offline();
 
+    // The agent declared a sleep/restart/shutdown via agent_goodbye: every
+    // confirming record gets the spec 5.3.2 expected-offline window (3/60 s),
+    // so a subsequent on_agent_offline() sweep spares it. Returns the number
+    // of records revised.
+    size_t on_agent_declared_offline();
+
     // ---- Macro dispatch pipeline (spec 10.3.1) ------------------------------
     // Macros interpret *after* the `dispatched` revision, unlike power chords
     // which terminate immediately in complete_dispatch. All three follow the

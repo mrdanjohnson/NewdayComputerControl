@@ -7,7 +7,7 @@ work. This file captures what changes day-to-day; keep it in sync.
 ## Commands
 
 ```bash
-./.venv/bin/pio test -e native                 # 114 host tests — run before EVERY flash
+./.venv/bin/pio test -e native                 # 119 host tests — run before EVERY flash
 ./.venv/bin/pio run -e esp32-s3-devkitc-1      # primary target (S3)
 ./.venv/bin/pio run -e esp32-wroom-32          # classic ESP32 (no USB HID)
 ./.venv/bin/pio run -e esp32-s3-devkitc-1 -t upload   # flash (uses UART port)

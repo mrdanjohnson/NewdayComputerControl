@@ -1815,19 +1815,28 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
         } else {
             resp["system"]["state"] = nullptr;
         }
-        resp["user"]["logged_in"] = st.has_user ? st.user_logged_in : false;
+        if (st.has_user) {
+            resp["user"]["logged_in"] = st.user_logged_in;
+        } else {
+            resp["user"]["logged_in"] = nullptr;
+        }
         if (st.has_user && !st.user.empty()) {
             resp["user"]["name"] = st.user;
         } else {
             resp["user"]["name"] = nullptr;
         }
-        resp["user"]["screen_locked"] = st.has_lock ? st.locked : false;
+        if (st.has_lock) {
+            resp["user"]["screen_locked"] = st.locked;
+        } else {
+            resp["user"]["screen_locked"] = nullptr;
+        }
         JsonObject apps = resp["applications"].to<JsonObject>();
         for (const auto& kv : st.apps) {
             JsonObject a = apps[kv.first.c_str()].to<JsonObject>();
             a["running"] = kv.second.running;
             a["pid"] = (int64_t)kv.second.pid;
         }
+        mcco::build_agent_system_info(resp["system_info"].to<JsonObject>(), st);
         sendJson(200, resp);
         return;
     }

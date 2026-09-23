@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "../../lib/maccontrol_core/mc_agent_events.h"
 #include "../../lib/maccontrol_core/mc_agent_session.h"
+#include <ArduinoJson.h>
 #include <string>
 
 namespace {
@@ -65,12 +66,19 @@ TEST(AgentEvents, HelloRoundTrip) {
     EXPECT_TRUE(ev.session_id.empty());
 }
 
-TEST(AgentEvents, ElevenTypesAllValidate) {
+TEST(AgentEvents, TwelveTypesAllValidate) {
     struct Case { const char* type; const char* payload; };
     Case cases[] = {
         {"agent_hello", "{\"protocol_version\":1,\"agent_version\":\"1.0.0\",\"boot_id\":\"b\",\"hostname\":\"h\"}"},
         {"agent_goodbye", "{\"reason\":\"sleep\"}"},
-        {"heartbeat", "{\"boot_id\":\"b\",\"uptime_s\":5}"},
+        {"heartbeat", "{\"boot_id\":\"b\",\"uptime_s\":5,\"mac_uptime_s\":86400,"
+                      "\"boot_time\":1736848800,\"cpu_utilization_pct\":12.5,"
+                      "\"memory_utilization_pct\":45,\"disk_free_bytes\":200000000000,"
+                      "\"network\":{\"reachable\":true,\"ip\":\"192.168.1.20\"}}"},
+        {"heartbeat", "{\"boot_id\":\"b\",\"uptime_s\":5,\"mac_uptime_s\":86400,"
+                      "\"boot_time\":1736848800,\"cpu_utilization_pct\":null,"
+                      "\"memory_utilization_pct\":null,\"disk_free_bytes\":null,"
+                      "\"network\":{\"reachable\":false,\"ip\":null}}"},
         {"system_state_changed", "{\"state\":\"awake\"}"},
         {"user_session_changed", "{\"user_logged_in\":true,\"user\":\"prod\"}"},
         {"user_session_changed", "{\"user_logged_in\":false,\"user\":null}"},
@@ -81,8 +89,11 @@ TEST(AgentEvents, ElevenTypesAllValidate) {
         {"command_result", "{\"command_id\":\"8F31A2C4\",\"outcome\":\"ok\",\"error_code\":null}"},
         {"command_result", "{\"command_id\":\"8F31A2C4\",\"outcome\":\"failed\",\"error_code\":\"launch_failed\"}"},
         {"capability_report", "{\"agent_version\":\"1.0.0\",\"protocol_version\":1,"
-         "\"os_version\":\"14.3\",\"enabled_commands\":[\"launch_app\"],"
+         "\"os_version\":\"14.3\",\"hardware_model\":\"Mac14,9\","
+         "\"enabled_commands\":[\"launch_app\"],"
          "\"allowlisted_apps\":[{\"bundle_id\":\"com.x\",\"state\":\"running\"}]}"},
+        {"front_app_changed", "{\"bundle_id\":\"com.x\"}"},
+        {"front_app_changed", "{\"bundle_id\":null}"},
     };
     for (auto& c : cases) {
         std::string json = std::string("{\"event_id\":\"evt_1\",\"agent_instance_id\":\"ag-7e21\","
@@ -92,6 +103,79 @@ TEST(AgentEvents, ElevenTypesAllValidate) {
         EXPECT_EQ(mcco::parse_agent_event(json, ev), mcco::AgentEventError::Ok) << c.type;
         EXPECT_EQ(std::string(mcco::agent_event_type_to_string(ev.type)), c.type) << c.type;
     }
+}
+
+TEST(AgentEvents, HeartbeatPhase45Validation) {
+    // Full payload round-trips and the realistic >2^31 disk value survives.
+    mcco::AgentEvent ev = parse_ok(
+        "{\"event_id\":\"e\",\"agent_instance_id\":\"a\",\"seq\":1,\"timestamp\":\"t\","
+        "\"type\":\"heartbeat\",\"payload\":{\"boot_id\":\"b\",\"uptime_s\":5,"
+        "\"mac_uptime_s\":86400,\"boot_time\":1736848800,\"cpu_utilization_pct\":12.5,"
+        "\"memory_utilization_pct\":45,\"disk_free_bytes\":200000000000,"
+        "\"network\":{\"reachable\":true,\"ip\":\"10.0.0.2\"}}}");
+    JsonDocument p;
+    ASSERT_FALSE(deserializeJson(p, ev.payload_json));
+    EXPECT_EQ((long long)p["disk_free_bytes"].as<long long>(), 200000000000LL);
+
+    // Violations: missing key, extra key, network missing reachable,
+    // network.ip wrong type, cpu as string.
+    auto violation = [&](const char* payload) {
+        std::string json = std::string("{\"event_id\":\"e\",\"agent_instance_id\":\"a\","
+                                       "\"seq\":1,\"timestamp\":\"t\",\"type\":\"heartbeat\","
+                                       "\"payload\":{") +
+                           payload + "}}";
+        mcco::AgentEvent e2;
+        EXPECT_EQ(mcco::parse_agent_event(json, e2), mcco::AgentEventError::SchemaViolation)
+            << payload;
+    };
+    violation("\"boot_id\":\"b\",\"uptime_s\":5,\"mac_uptime_s\":1,\"boot_time\":1,"
+              "\"cpu_utilization_pct\":null,\"memory_utilization_pct\":null,"
+              "\"disk_free_bytes\":null");  // missing network
+    violation("\"boot_id\":\"b\",\"uptime_s\":5,\"mac_uptime_s\":1,\"boot_time\":1,"
+              "\"cpu_utilization_pct\":null,\"memory_utilization_pct\":null,"
+              "\"disk_free_bytes\":null,\"network\":{\"reachable\":true,\"ip\":null},"
+              "\"extra\":1");  // extra key
+    violation("\"boot_id\":\"b\",\"uptime_s\":5,\"mac_uptime_s\":1,\"boot_time\":1,"
+              "\"cpu_utilization_pct\":null,\"memory_utilization_pct\":null,"
+              "\"disk_free_bytes\":null,\"network\":{\"ip\":null}");  // no reachable
+    violation("\"boot_id\":\"b\",\"uptime_s\":5,\"mac_uptime_s\":1,\"boot_time\":1,"
+              "\"cpu_utilization_pct\":null,\"memory_utilization_pct\":null,"
+              "\"disk_free_bytes\":null,\"network\":{\"reachable\":true,\"ip\":7}");  // ip type
+    violation("\"boot_id\":\"b\",\"uptime_s\":5,\"mac_uptime_s\":1,\"boot_time\":1,"
+              "\"cpu_utilization_pct\":\"busy\",\"memory_utilization_pct\":null,"
+              "\"disk_free_bytes\":null,\"network\":{\"reachable\":true,\"ip\":null}");  // cpu string
+}
+
+TEST(AgentEvents, CapabilityReportHardwareModel) {
+    mcco::AgentEvent ev;
+    // hardware_model is now a required capability_report key.
+    EXPECT_EQ(mcco::parse_agent_event(
+                  "{\"event_id\":\"e\",\"agent_instance_id\":\"a\",\"seq\":1,\"timestamp\":\"t\","
+                  "\"type\":\"capability_report\",\"payload\":{\"agent_version\":\"1.0.0\","
+                  "\"protocol_version\":1,\"os_version\":\"14.3\",\"enabled_commands\":[],"
+                  "\"allowlisted_apps\":[]}}", ev),
+              mcco::AgentEventError::SchemaViolation);
+    EXPECT_EQ(mcco::parse_agent_event(
+                  "{\"event_id\":\"e\",\"agent_instance_id\":\"a\",\"seq\":1,\"timestamp\":\"t\","
+                  "\"type\":\"capability_report\",\"payload\":{\"agent_version\":\"1.0.0\","
+                  "\"protocol_version\":1,\"os_version\":\"14.3\",\"hardware_model\":\"Mac14,9\","
+                  "\"enabled_commands\":[],\"allowlisted_apps\":[]}}", ev),
+              mcco::AgentEventError::Ok);
+}
+
+TEST(AgentEvents, FrontAppChangedValidation) {
+    mcco::AgentEvent ev;
+    EXPECT_EQ(mcco::parse_agent_event(
+                  "{\"event_id\":\"e\",\"agent_instance_id\":\"a\",\"seq\":1,\"timestamp\":\"t\","
+                  "\"type\":\"front_app_changed\",\"payload\":{\"bundle_id\":\"com.x\"}}", ev),
+              mcco::AgentEventError::Ok);
+    EXPECT_EQ(ev.type, mcco::AgentEventType::FrontAppChanged);
+    EXPECT_EQ(std::string(mcco::agent_event_type_to_string(ev.type)), "front_app_changed");
+    // Extra key is a schema violation.
+    EXPECT_EQ(mcco::parse_agent_event(
+                  "{\"event_id\":\"e\",\"agent_instance_id\":\"a\",\"seq\":1,\"timestamp\":\"t\","
+                  "\"type\":\"front_app_changed\",\"payload\":{\"bundle_id\":\"com.x\",\"title\":\"x\"}}", ev),
+              mcco::AgentEventError::SchemaViolation);
 }
 
 TEST(AgentEvents, RejectsUnknownTypeAndSchemaViolations) {

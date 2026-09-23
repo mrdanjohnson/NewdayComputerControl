@@ -13,9 +13,10 @@ from datetime import datetime, timezone
 
 MAX_EVENT_BYTES = 4096
 PROTOCOL_VERSION = 1
-AGENT_VERSION = "1.0.0"
+AGENT_VERSION = "1.1.1"
 
-# Closed catalog of the eleven MCA event types (spec 6.2.1).
+# Closed catalog of the twelve MCA event types (spec 6.2.1 + Phase 4.5
+# amendment: front_app_changed, foreground-app deltas only).
 EVENT_TYPES = (
     "agent_hello",
     "agent_goodbye",
@@ -28,6 +29,7 @@ EVENT_TYPES = (
     "command_ack",
     "command_result",
     "capability_report",
+    "front_app_changed",
 )
 
 # Closed enum for command_result.error_code (spec 6.2.1).

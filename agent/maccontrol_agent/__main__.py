@@ -184,6 +184,9 @@ def do_pair(state, state_path, hostname, code, log):
 # --------------------------------------------------------------------------
 
 async def serve(rt):
+    from .power import SleepWatcher
+    rt.sleep_watcher = SleepWatcher(rt, asyncio.get_event_loop())
+    rt.sleep_watcher.start()
     telemetry_task = asyncio.ensure_future(rt.telemetry.run())
     try:
         if rt.state.transport == "polling":
@@ -191,6 +194,7 @@ async def serve(rt):
         else:
             rc = await WSTransport(rt).run()
     finally:
+        rt.sleep_watcher.stop()
         rt.stop_event.set()
         telemetry_task.cancel()
         await asyncio.gather(telemetry_task, return_exceptions=True)

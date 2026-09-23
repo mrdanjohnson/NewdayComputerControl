@@ -179,6 +179,12 @@ void AgentLink::applyEvidence(const mcco::AgentEvent& ev) {
             case mcco::AgentEventType::CapabilityReport: {
                 st.has_capability = true;
                 st.capability_at = now;
+                if (const char* osv = o["os_version"].as<const char*>()) {
+                    if (st.os_version != osv) st.os_version = osv;
+                }
+                if (const char* hw = o["hardware_model"].as<const char*>()) {
+                    if (st.hardware_model != hw) st.hardware_model = hw;
+                }
                 st.enabled_commands.clear();
                 for (JsonVariantConst c : o["enabled_commands"].as<JsonArrayConst>()) {
                     if (c.is<const char*>()) st.enabled_commands.emplace_back(c.as<const char*>());
@@ -200,8 +206,54 @@ void AgentLink::applyEvidence(const mcco::AgentEvent& ev) {
                 }
                 break;
             }
+            case mcco::AgentEventType::Heartbeat: {
+                // Spec 6.3 telemetry: the sample always counts as received
+                // (sysinfo_at = receipt time); a null sample keeps the last
+                // known value. Freshness anchors on last_frame_at (spec 4.2.2).
+                st.has_sysinfo = true;
+                st.sysinfo_at = now;
+                if (o["cpu_utilization_pct"].is<double>())
+                    st.cpu_pct = o["cpu_utilization_pct"].as<double>();
+                if (o["memory_utilization_pct"].is<double>())
+                    st.mem_pct = o["memory_utilization_pct"].as<double>();
+                if (o["disk_free_bytes"].is<long long>())
+                    st.disk_free_bytes = (uint64_t)o["disk_free_bytes"].as<long long>();
+                JsonObjectConst net = o["network"].as<JsonObjectConst>();
+                if (!net.isNull()) {
+                    if (net["reachable"].is<bool>())
+                        st.net_reachable = net["reachable"].as<bool>();
+                    if (const char* ip = net["ip"].as<const char*>()) {
+                        // Assign only on change: no per-heartbeat heap churn.
+                        if (st.net_ip != ip) st.net_ip = ip;
+                    }
+                }
+                if (o["mac_uptime_s"].is<int>()) {
+                    st.has_mac_uptime = true;
+                    st.mac_uptime_s = (uint64_t)o["mac_uptime_s"].as<int>();
+                    st.boot_time = (uint64_t)o["boot_time"].as<int>();
+                }
+                break;
+            }
+            case mcco::AgentEventType::FrontAppChanged: {
+                const char* b = o["bundle_id"].as<const char*>();
+                const std::string v = b ? b : "";  // null = no frontmost app
+                if (st.front_app != v) st.front_app = v;
+                st.has_front_app = true;
+                break;
+            }
+            case mcco::AgentEventType::Goodbye: {
+                // A declared sleep/restart/shutdown means channel loss is
+                // expected: confirming records get an offline window (5.3.2).
+                const char* r = o["reason"].as<const char*>();
+                if (r && (strcmp(r, "sleep") == 0 || strcmp(r, "restart") == 0 ||
+                          strcmp(r, "shutdown") == 0)) {
+                    Guard g(ctx_->engine_mutex);
+                    ctx_->engine->on_agent_declared_offline();
+                }
+                break;
+            }
             default:
-                break; // heartbeat/goodbye/command_ack/command_result: no status fields
+                break; // command_ack/command_result: no status fields
         }
     }
     ctx_->status_cache->setAgentStatus(st);

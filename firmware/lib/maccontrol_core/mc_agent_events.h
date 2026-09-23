@@ -5,11 +5,12 @@
 
 namespace mcco {
 
-// Closed event catalog (spec 6.2.1): exactly eleven types exist.
+// Closed event catalog (spec 6.2.1): exactly twelve types exist; the twelfth
+// (FrontAppChanged) is the Phase 4.5 spec amendment (frontmost bundle ID).
 enum class AgentEventType : uint8_t {
     Hello, Goodbye, Heartbeat, SystemStateChanged, UserSessionChanged,
     ScreenLockChanged, ApplicationStarted, ApplicationExited,
-    CommandAck, CommandResult, CapabilityReport
+    CommandAck, CommandResult, CapabilityReport, FrontAppChanged
 };
 
 bool agent_event_type_from_string(const char* s, AgentEventType& out);

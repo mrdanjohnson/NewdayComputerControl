@@ -17,6 +17,7 @@ bool agent_event_type_from_string(const char* s, AgentEventType& out) {
     else if (v == "command_ack") out = AgentEventType::CommandAck;
     else if (v == "command_result") out = AgentEventType::CommandResult;
     else if (v == "capability_report") out = AgentEventType::CapabilityReport;
+    else if (v == "front_app_changed") out = AgentEventType::FrontAppChanged;
     else return false;
     return true;
 }
@@ -34,6 +35,7 @@ const char* agent_event_type_to_string(AgentEventType t) {
         case AgentEventType::CommandAck: return "command_ack";
         case AgentEventType::CommandResult: return "command_result";
         case AgentEventType::CapabilityReport: return "capability_report";
+        case AgentEventType::FrontAppChanged: return "front_app_changed";
     }
     return "heartbeat";
 }
@@ -75,8 +77,35 @@ static AgentEventError validate_payload(AgentEventType t, JsonObjectConst p) {
                 return AgentEventError::SchemaViolation;
             return AgentEventError::Ok;
         case AgentEventType::Heartbeat:
-            if (!payload_keys_exact(p, {"boot_id", "uptime_s"}) ||
-                !p["boot_id"].is<const char*>() || !p["uptime_s"].is<int>())
+            // Phase 4.5 composite telemetry (spec 6.3): load samples are
+            // null-or-number, disk may exceed int32 (long long on the wire).
+            if (!payload_keys_exact(p, {"boot_id", "uptime_s", "mac_uptime_s", "boot_time",
+                                        "cpu_utilization_pct", "memory_utilization_pct",
+                                        "disk_free_bytes", "network"}) ||
+                !p["boot_id"].is<const char*>() || !p["uptime_s"].is<int>() ||
+                !p["mac_uptime_s"].is<int>() || !p["boot_time"].is<int>())
+                return AgentEventError::SchemaViolation;
+            for (const char* k : {"cpu_utilization_pct", "memory_utilization_pct"}) {
+                JsonVariantConst v = p[k];
+                if (!v.isNull() && !v.is<int>() && !v.is<double>())
+                    return AgentEventError::SchemaViolation;
+            }
+            if (!p["disk_free_bytes"].isNull() && !p["disk_free_bytes"].is<int>() &&
+                !p["disk_free_bytes"].is<long long>())
+                return AgentEventError::SchemaViolation;
+            {
+                JsonObjectConst n = p["network"].as<JsonObjectConst>();
+                if (n.isNull() || !payload_keys_exact(n, {"reachable", "ip"}) ||
+                    !n["reachable"].is<bool>())
+                    return AgentEventError::SchemaViolation;
+                if (!n["ip"].isNull() && !n["ip"].is<const char*>())
+                    return AgentEventError::SchemaViolation;
+            }
+            return AgentEventError::Ok;
+        case AgentEventType::FrontAppChanged:
+            // Spec amendment (Phase 4.5, scope B1): frontmost bundle ID only.
+            if (!payload_keys_exact(p, {"bundle_id"}) ||
+                (!p["bundle_id"].isNull() && !p["bundle_id"].is<const char*>()))
                 return AgentEventError::SchemaViolation;
             return AgentEventError::Ok;
         case AgentEventType::SystemStateChanged:
@@ -134,9 +163,11 @@ static AgentEventError validate_payload(AgentEventType t, JsonObjectConst p) {
         }
         case AgentEventType::CapabilityReport: {
             if (!payload_keys_exact(p, {"agent_version", "protocol_version", "os_version",
-                                        "enabled_commands", "allowlisted_apps"}) ||
+                                        "hardware_model", "enabled_commands",
+                                        "allowlisted_apps"}) ||
                 !p["agent_version"].is<const char*>() || !p["protocol_version"].is<int>() ||
-                !p["os_version"].is<const char*>() || !p["enabled_commands"].is<JsonArrayConst>() ||
+                !p["os_version"].is<const char*>() || !p["hardware_model"].is<const char*>() ||
+                !p["enabled_commands"].is<JsonArrayConst>() ||
                 !p["allowlisted_apps"].is<JsonArrayConst>())
                 return AgentEventError::SchemaViolation;
             for (JsonVariantConst c : p["enabled_commands"].as<JsonArrayConst>()) {

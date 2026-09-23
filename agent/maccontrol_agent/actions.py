@@ -95,6 +95,19 @@ async def _launch(rt, command_id, bundle_id):
         _send_result(rt, command_id, "failed", "action_timeout")
     elif rc == 0:
         rt.log("launched %s" % bundle_id)
+        # Launching an already-running app produces no Telemetry
+        # application_started delta, which the engine needs to confirm the
+        # command — if the probe already sees it, emit the evidence here.
+        # Duplicates are safe: the engine's predicate is ack+app-event, and
+        # a delta double against an already-confirmed record is idempotent.
+        for _ in range(10):
+            running = rt.app_monitor.probe()
+            if bundle_id in running:
+                rt.enqueue("application_started",
+                           {"bundle_id": bundle_id,
+                            "pid": running.get(bundle_id, 0)})
+                break
+            await asyncio.sleep(0.5)
         _send_result(rt, command_id, "ok", None)
     else:
         rt.log("launch %s failed (rc=%d)" % (bundle_id, rc))

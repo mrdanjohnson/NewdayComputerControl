@@ -50,6 +50,22 @@ struct AgentStatus {
     uint64_t capability_at = 0;
     std::vector<std::string> enabled_commands;
     std::vector<std::pair<std::string, bool>> allowlisted_apps;  // bundle_id, running
+    // Phase 4.5 composite telemetry (spec 6.3), all from the heartbeat frame.
+    // Null samples keep the previous value but still refresh sysinfo_at.
+    bool has_sysinfo = false;
+    uint64_t sysinfo_at = 0;
+    double cpu_pct = 0;
+    double mem_pct = 0;
+    uint64_t disk_free_bytes = 0;
+    bool net_reachable = false;
+    std::string net_ip;              // empty = unknown -> rendered null
+    bool has_mac_uptime = false;     // boot_time + Mac uptime (heartbeat mac_uptime_s)
+    uint64_t mac_uptime_s = 0;
+    uint64_t boot_time = 0;          // epoch seconds of the Mac's kern.boottime
+    std::string os_version;          // from capability_report; null when !has_capability
+    std::string hardware_model;
+    bool has_front_app = false;      // front_app_changed (spec amendment, scope B1)
+    std::string front_app;           // empty = none -> rendered null
     uint32_t stale_threshold_s = 15;    // spec 4.2.2 defaults (3x/6x of 5 s)
     uint32_t offline_threshold_s = 30;
 };
@@ -92,6 +108,13 @@ void build_status_mode_a(JsonDocument& doc, const Identity& id, bool usb_up,
                          bool network_up, uint64_t network_probe_at,
                          uint64_t identity_observed_at, uint64_t now,
                          uint32_t cache_epoch);
+
+// /api/v1/agent/status `system_info` section (spec 6.3, Phase 4.5). Fills
+// `out` with cpu/memory/disk/network samples, uptime_s (the MAC uptime, not
+// the agent heartbeat's uptime_s — see the OpenAPI amendment note), boot_time,
+// os_version, hardware_model, and front_app. Every leaf is null when its
+// evidence is absent (§9 honesty); net_ip/front_app empty also render null.
+void build_agent_system_info(JsonObject out, const AgentStatus& st);
 void build_capabilities_mode_a(JsonDocument& doc, const Identity& id,
                                const std::vector<std::string>& macro_ids);
 

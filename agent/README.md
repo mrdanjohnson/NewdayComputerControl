@@ -97,8 +97,10 @@ validated against `^[A-Za-z0-9.-]+$` before any interpolation.
 Screen-lock detection uses the well-known `CGSessionCopyCurrentDictionary`
 snippet via pyobjc (`pip install pyobjc-framework-Quartz` into the venv). **Without
 pyobjc the agent still runs**, but `screen_lock_changed` events are not emitted
-(lock state is reported as undetectable) and app monitoring falls back to
-sparse `mdfind`/`pgrep` polling.
+(lock state is reported as undetectable) and sleep/wake observation is
+unavailable. App detection does NOT use pyobjc: it is psutil-primary
+(exe-path prefix match against the mdfind-resolved .app path), falling back
+to sparse `mdfind`/`pgrep` polling only when psutil is missing.
 
 ## Transport fallback
 
@@ -118,22 +120,35 @@ sparse `mdfind`/`pgrep` polling.
   `409 agent_offline` → open a new session, `400 validation_failed` → backoff.
   Switching transports mid-session is prohibited; a switch starts a new session.
 
-## Phase 4 scope / known gaps
+## Phase 4.5 scope / known gaps
 
-- **Sleep/wake OS notifications are Phase 5+**: the agent cannot yet observe
-  `system_state_changed` transitions from the OS, so it always reports
-  `awake` while running. `Runtime.declare_expected_offline()` is wired
-  (goodbye + reconnect hold until `close_after_s`) but nothing triggers it
-  until OS power notifications land.
-- **Without pyobjc**, app state detection degrades to best-effort
-  `mdfind`/`pgrep` polling (misses are possible) and screen-lock detection is
-  unavailable. `osascript`-based probing is used sparingly; install
-  `pyobjc-framework-Quartz`/`pyobjc-framework-Cocoa` for the full experience.
+- **Sleep/wake is detected when pyobjc is installed** (Phase 4.5): an
+  NSWorkspace notification observer (power.py) emits
+  `system_state_changed` `sleeping` / `waking` / `awake` deltas and declares
+  the sleep an expected-offline via the goodbye path, so a commanded sleep
+  reads as `expected_offline`, not fault. Without pyobjc the watcher is a
+  no-op and system state stays "awake" while the agent runs, as before.
+- **Composite heartbeat (spec 6.3.1)**: heartbeats now carry `boot_time`,
+  Mac `mac_uptime_s`, `cpu_utilization_pct`, `memory_utilization_pct`,
+  `disk_free_bytes`, and a `network` `{reachable, ip}` object (routing-table
+  check only — no outbound probe traffic). Samples are taken at heartbeat
+  emission time via psutil, with `vm_stat` / `df` / `top` subprocess
+  fallbacks; any sample that fails comes through as `null` rather than being
+  omitted (spec 9 honesty). `capability_report` additionally carries
+  `hardware_model` (`sysctl hw.model`, cached per process).
+- **Foreground app tracking** (Phase 4.5 B1): `front_app_changed` deltas
+  (frontmost bundle ID via NSWorkspace) on the 3 s monitor cadence, first
+  detection included; deltas only, never in the initial burst. Requires
+  pyobjc; silently skipped without it. Relies on NSWorkspace and may lag in
+  headless (no NSRunLoop) contexts — best-effort, unlike app detection.
+- **Without pyobjc**, screen-lock detection and sleep/wake observation are
+  unavailable and load samples depend on the subprocess fallbacks above.
+  **Without psutil**, app state detection degrades to best-effort
+  `mdfind`/`pgrep` polling (misses are possible). Install
+  `pyobjc-framework-Quartz` / `pyobjc-framework-Cocoa` (and `psutil`) into
+  the venv for the full experience.
 - **MCA UI is minimal** (status + code entry + log view). The full 5-view UI
   of spec chapter 14 is a later phase; command enablement and the allowlist
   are currently CLI/state-file only.
 - `--show-log` reads the bounded `~/.maccontrol/agent.log` written alongside
   the state file (the live 500-entry ring buffer is in-process).
-- Heartbeat/system sampling extras (CPU, memory, disk, network of spec 6.3.1's
-  composite report) are ESP32-assembled from events; the agent emits the
-  Chapter 6 event stream only.

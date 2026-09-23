@@ -225,6 +225,44 @@ TEST(EngineAgent, DeadlineSweepAndEvidenceLoss) {
     EXPECT_EQ(rec->error_code, "deadline_exceeded");
 }
 
+TEST(EngineAgent, DeclaredOfflineMarksConfirmingRecords) {
+    Ctx c;
+    c.engine.set_mode('B');
+    c.engine.set_agent_gate([](const mcco::Submission&) { return std::optional<mcco::ErrCode>(); });
+    auto out = c.engine.submit(app_sub(mcco::CommandType::AppLaunch, "com.x"));
+    ASSERT_TRUE(out.ok);
+    ASSERT_TRUE(c.engine.complete_dispatch(out.record.command_id, true));
+    EXPECT_EQ(c.engine.get(out.record.command_id)->state, mcco::CommandState::Confirming);
+
+    // agent_goodbye(sleep): the record gets the expected-offline window (5.3.2).
+    EXPECT_EQ(c.engine.on_agent_declared_offline(), 1);
+    const mcco::CommandRecord* rec = c.engine.get(out.record.command_id);
+    EXPECT_EQ(rec->state, mcco::CommandState::Confirming); // still confirming
+    EXPECT_TRUE(rec->has_window);
+    EXPECT_EQ(rec->window_open_after_s, 3);
+    EXPECT_EQ(rec->window_close_after_s, 60);
+
+    // A subsequent offline sweep must NOT sweep the windowed record.
+    EXPECT_EQ(c.engine.on_agent_offline(), 0);
+    rec = c.engine.get(out.record.command_id);
+    EXPECT_EQ(rec->state, mcco::CommandState::Confirming);
+
+    // Non-confirming records are untouched.
+    mcco::Submission sub2 = app_sub(mcco::CommandType::AppLaunch, "com.y");
+    sub2.body_hash = "h2"; // distinct hash: derived coalescing must not replay
+    auto out2 = c.engine.submit(sub2);
+    ASSERT_TRUE(out2.ok);
+    EXPECT_EQ(c.engine.on_agent_declared_offline(), 0); // accepted, not confirming
+    const mcco::CommandRecord* rec2 = c.engine.get(out2.record.command_id);
+    EXPECT_EQ(rec2->state, mcco::CommandState::Accepted);
+    EXPECT_FALSE(rec2->has_window);
+
+    // A second declared-offline call is idempotent (already has_window).
+    ASSERT_TRUE(c.engine.complete_dispatch(out2.record.command_id, true));
+    EXPECT_EQ(c.engine.on_agent_declared_offline(), 1); // only the new record
+    EXPECT_EQ(c.engine.on_agent_declared_offline(), 0); // nothing left to mark
+}
+
 TEST(EngineAgent, ModeBPowerCommandStillNeverCompletes) {
     Ctx c;
     c.engine.set_mode('B');

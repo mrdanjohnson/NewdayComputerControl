@@ -2,8 +2,9 @@
 
 Best-effort by design (spec 9): with pyobjc available we use NSWorkspace for
 application state and CoreGraphics for screen lock; without it we fall back to
-sparse ``pgrep`` / ``mdfind`` polling. Sleep/wake OS notifications are a later
-phase — the reported system state is always "awake" while the process runs.
+sparse ``pgrep`` / ``mdfind`` polling. Sleep/wake OS notifications live in
+power.py (Phase 4.5 A5); system load samples for the composite heartbeat use
+psutil with subprocess fallbacks, all best-effort-null per spec 9.
 """
 from __future__ import annotations
 
@@ -94,43 +95,186 @@ def get_screen_locked():
 
 
 # --------------------------------------------------------------------------
+# System load samplers (spec 6.3.1 composite report, sampled at heartbeat
+# emission time only). psutil when importable, subprocess fallbacks, null on
+# any failure — robust-and-null over clever-and-brittle (spec 9).
+# --------------------------------------------------------------------------
+
+def _cmd_output(argv, timeout=5):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True,
+                              timeout=timeout).stdout
+    except Exception:
+        return ""
+
+
+class SystemSampler:
+    """Samples cpu/memory/disk/network for the extended heartbeat payload.
+
+    The cpu counter is primed once at construction so the first heartbeat
+    carries a real delta rather than the 0.0 psutil returns on first call.
+    """
+
+    def __init__(self):
+        self._psutil = None
+        try:
+            import psutil
+            self._psutil = psutil
+            psutil.cpu_percent(interval=None)  # prime the delta counter
+        except Exception:
+            pass
+
+    def cpu_percent(self):
+        """0-100 utilization since last call, or None if undeterminable."""
+        if self._psutil:
+            try:
+                return round(float(self._psutil.cpu_percent(interval=None)), 1)
+            except Exception:
+                return None
+        # Fallback: second sample of `top -l 2` (first sample is all-zero).
+        out = _cmd_output(["top", "-l", "2", "-n", "0"], timeout=10)
+        for line in reversed(out.splitlines()):
+            if "CPU usage" not in line:
+                continue
+            try:
+                user = float(line.split("user")[0].split(":")[1].strip().rstrip("%"))
+                sys_part = line.split("sys")[0].split(",")[-1].strip().rstrip("%")
+                return round(user + float(sys_part), 1)
+            except Exception:
+                return None
+        return None
+
+    def memory_percent(self):
+        """0-100 physical memory utilization, or None."""
+        if self._psutil:
+            try:
+                return round(float(self._psutil.virtual_memory().percent), 1)
+            except Exception:
+                return None
+        # Fallback: vm_stat pages (active+wired+compressed) / hw.memsize.
+        out = _cmd_output(["vm_stat"])
+        page_size = None
+        pages = {}
+        for line in out.splitlines():
+            line = line.strip()
+            if "page size of" in line:
+                try:
+                    page_size = int(line.split("page size of")[1].split()[0])
+                except (IndexError, ValueError):
+                    return None
+                continue
+            name, sep, rest = line.partition(":")
+            if not sep:
+                continue
+            try:
+                pages[name.strip()] = int(rest.strip().rstrip("."))
+            except ValueError:
+                continue
+        if not page_size:
+            return None
+        used = sum(pages.get(k, 0) for k in
+                   ("Pages active", "Pages wired down",
+                    "Pages occupied by compressor"))
+        if not used:
+            return None
+        try:
+            memsize = int(_cmd_output(["sysctl", "-n", "hw.memsize"]).strip())
+            return round(used * page_size * 100.0 / memsize, 1)
+        except Exception:
+            return None
+
+    def disk_free_bytes(self):
+        """Free bytes on the root volume, or None."""
+        if self._psutil:
+            try:
+                return int(self._psutil.disk_usage("/").free)
+            except Exception:
+                return None
+        # Fallback: `df -k /` last line, available-blocks column x1024.
+        out = _cmd_output(["df", "-k", "/"])
+        lines = [l for l in out.splitlines() if l.strip()]
+        if len(lines) < 2:
+            return None
+        fields = lines[-1].split()
+        if len(fields) < 4:
+            return None
+        try:
+            return int(fields[3]) * 1024
+        except ValueError:
+            return None
+
+    def network(self):
+        """{reachable, ip} from the routing table only — NO outbound traffic."""
+        reachable = False
+        ip = None
+        try:
+            p = subprocess.run(["route", "-n", "get", "default"],
+                               capture_output=True, text=True, timeout=5)
+            reachable = p.returncode == 0
+            if reachable:
+                iface = None
+                for line in p.stdout.splitlines():
+                    key, _, val = line.strip().partition(":")
+                    if key.strip() == "interface":
+                        iface = val.strip()
+                        break
+                if iface:
+                    addr = _cmd_output(["ipconfig", "getifaddr", iface]).strip()
+                    ip = addr or None
+        except Exception:
+            pass
+        return {"reachable": reachable, "ip": ip}
+
+
+# --------------------------------------------------------------------------
+# hardware model (capability_report; static, probed once per process)
+# --------------------------------------------------------------------------
+
+_hardware_model = None
+_hardware_model_probed = False
+
+def get_hardware_model():
+    """hw.model string, probed once per process; None if unavailable."""
+    global _hardware_model, _hardware_model_probed
+    if not _hardware_model_probed:
+        _hardware_model_probed = True
+        out = _cmd_output(["sysctl", "-n", "hw.model"]).strip()
+        _hardware_model = out or None
+    return _hardware_model
+
+
+# --------------------------------------------------------------------------
 # Application monitor
 # --------------------------------------------------------------------------
 
 class AppMonitor:
     """Tracks running state of allowlisted apps and emits start/exit deltas.
 
-    Preferred source is NSWorkspace (pyobjc). Fallback: resolve each bundle
-    ID to an app path via mdfind (cached) and pgrep -f the path. The fallback
-    is best-effort and can miss apps; the gap is documented in README.
+    Preferred source is psutil: each bundle ID is resolved to an .app path
+    via mdfind (cached) and processes are matched by exe-path prefix from a
+    single process_iter scan per probe. Fallback without psutil: pgrep -f
+    the app path (best-effort, can miss apps; documented in README).
+
+    NSWorkspace is deliberately NOT used here: in a headless asyncio process
+    with no NSRunLoop its runningApplications() snapshot freezes at the
+    first query and apps launched later never appear (bench-verified,
+    AT-11 / docs/DEBUG-PHASE4-AT11.md).
     """
 
     def __init__(self, allowlist, logger):
         self.allowlist = list(allowlist)
         self.log = logger
-        self._use_nsworkspace = False
+        self._psutil = None
         self._path_cache = {}  # bundle_id -> app path or None
         try:
-            import AppKit  # noqa: F401
-            self._use_nsworkspace = True
+            import psutil
+            self._psutil = psutil
         except Exception:
-            self.log("AppMonitor: pyobjc not available; using pgrep fallback "
+            self.log("AppMonitor: psutil not available; using pgrep fallback "
                      "(app state detection is best-effort)")
 
     def update_allowlist(self, allowlist):
         self.allowlist = list(allowlist)
-
-    def _probe_nsworkspace(self):
-        import AppKit
-        running = {}
-        for app in AppKit.NSWorkspace.sharedWorkspace().runningApplications():
-            bid = app.bundleIdentifier()
-            if bid in self.allowlist:
-                try:
-                    running[bid] = int(app.processIdentifier())
-                except Exception:
-                    running[bid] = 0
-        return running
 
     def _resolve_path(self, bundle_id):
         if bundle_id in self._path_cache:
@@ -150,6 +294,30 @@ class AppMonitor:
             pass
         self._path_cache[bundle_id] = path
         return path
+
+    def _probe_psutil(self):
+        running = {}
+        exes = []  # (exe path, pid), one process_iter scan for all bundles
+        try:
+            for proc in self._psutil.process_iter(["exe"]):
+                try:
+                    info = proc.info
+                    if info.get("exe"):
+                        exes.append((info["exe"], info.get("pid") or proc.pid))
+                except Exception:
+                    continue
+        except Exception as exc:
+            self.log("AppMonitor: process scan failed: %s" % exc)
+            return None
+        for bid in self.allowlist:
+            path = self._resolve_path(bid)
+            if not path:
+                continue
+            for exe, pid in exes:
+                if exe.startswith(path):
+                    running[bid] = int(pid)
+                    break
+        return running
 
     def _probe_pgrep(self):
         running = {}
@@ -173,11 +341,10 @@ class AppMonitor:
 
     def probe(self):
         """Return {bundle_id: pid or 0} for allowlisted apps currently running."""
-        if self._use_nsworkspace:
-            try:
-                return self._probe_nsworkspace()
-            except Exception as exc:
-                self.log("AppMonitor: NSWorkspace probe failed: %s" % exc)
+        if self._psutil:
+            running = self._probe_psutil()
+            if running is not None:
+                return running
         return self._probe_pgrep()
 
     def is_running(self, bundle_id) -> bool:
@@ -213,6 +380,15 @@ class Telemetry:
         self._locked = None
         self._user = get_user()
         self._quit_marks = {}  # bundle_id -> monotonic time of agent-requested quit
+        self._sampler = SystemSampler()
+        self._boot_time = get_boot_key()  # epoch sec of Mac boot (kern.boottime)
+        self._front_app = None
+        self._front_app_seen = False
+        try:
+            import AppKit  # noqa: F401
+            self._has_nsworkspace = True
+        except Exception:
+            self._has_nsworkspace = False
 
     # -- producers ---------------------------------------------------------
 
@@ -221,9 +397,16 @@ class Telemetry:
         interval = float(self.rt.hello_params.get("heartbeat_interval_s", 5))
         if now - self._last_hb >= interval:
             self._last_hb = now
+            boot_time = self._boot_time
             self.rt.enqueue("heartbeat", {
                 "boot_id": self.rt.boot_id,
                 "uptime_s": int(now - self.rt.started_monotonic),
+                "boot_time": boot_time,
+                "mac_uptime_s": int(time.time() - boot_time) if boot_time else None,
+                "cpu_utilization_pct": self._sampler.cpu_percent(),
+                "memory_utilization_pct": self._sampler.memory_percent(),
+                "disk_free_bytes": self._sampler.disk_free_bytes(),
+                "network": self._sampler.network(),
             })
             return True
         return False
@@ -264,6 +447,26 @@ class Telemetry:
                 "user": user,
             })
 
+    def emit_front_app_delta(self):
+        """front_app_changed on first detection and on change (Phase 4.5 B1).
+
+        NSWorkspace only (no meaningful fallback); silently skipped without
+        pyobjc. Deltas only — never part of the initial burst.
+        """
+        if not self._has_nsworkspace:
+            return
+        try:
+            import AppKit
+            app = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+            bid = app.bundleIdentifier() if app is not None else None
+        except Exception as exc:
+            self.rt.log("frontmost app probe failed: %s" % exc)
+            return
+        if not self._front_app_seen or bid != self._front_app:
+            self._front_app = bid
+            self._front_app_seen = True
+            self.rt.enqueue("front_app_changed", {"bundle_id": bid})
+
     def mark_agent_quit(self, bundle_id):
         self._quit_marks[bundle_id] = time.monotonic()
 
@@ -295,6 +498,7 @@ class Telemetry:
             "agent_version": protocol.AGENT_VERSION,
             "protocol_version": protocol.PROTOCOL_VERSION,
             "os_version": get_macos_version(),
+            "hardware_model": get_hardware_model(),
             "enabled_commands": sorted(
                 a for a, on in rt.state.enabled_commands.items() if on),
             "allowlisted_apps": [
@@ -317,6 +521,7 @@ class Telemetry:
                 self.emit_heartbeat_if_due()
                 self.emit_app_deltas()
                 self.emit_lock_user_deltas()
+                self.emit_front_app_delta()
             except Exception as exc:  # telemetry must never kill the agent
                 self.rt.log("telemetry error: %s" % exc)
             try:
