@@ -158,4 +158,5 @@
  lib/maccontrol_core/mc_pairing.h lib/maccontrol_core/mc_rate_limit.h \
  src/mdns_service.h src/nvs_config.h \
  /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
- src/status_cache.h src/trigger_store.h src/web_ui.h src/wifi_mgr.h
+ src/status_cache.h src/trigger_store.h src/usb_link.h src/web_ui.h \
+ src/wifi_mgr.h

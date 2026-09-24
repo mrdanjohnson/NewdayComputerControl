@@ -125,7 +125,7 @@ footer{padding:8px 16px;color:#8a97a5;font-size:11px}
       </div>
       <label>Expected event (optional Mode B verification declaration)</label>
       <div class="row">
-        <div><select id="m-evtype"><option value="">(none — always terminates Unverified)</option>
+        <div><select id="m-evtype" onchange="el('m-evmatch').placeholder='match JSON, e.g. '+evMatchHint(this.value)"><option value="">(none — always terminates Unverified)</option>
           <option>application_started</option><option>application_exited</option>
           <option>system_state_changed</option><option>user_session_changed</option>
           <option>screen_lock_changed</option></select></div>
@@ -454,6 +454,16 @@ async function editMacro(id){
 function cancelMacroEdit(){el('macroeditor').style.display='none';}
 function addStep(){editingSteps.push({type:'key_press',key:'enter',modifiers:[],value:'',delay_ms:100});renderSteps();}
 function stepTypes(){return ['key_press','key_combo','modifier_down','modifier_up','key_release','text','delay'];}
+// Per-type example for the expected_event exact-match object (spec 10.1.1 —
+// `match` is a required part of the declaration; the core rejects a type
+// with no match as invalid expected_event).
+function evMatchHint(t){
+  return {'application_started':'{"bundle_id":"com.example.app"}',
+          'application_exited':'{"bundle_id":"com.example.app"}',
+          'system_state_changed':'{"state":"awake"}',
+          'user_session_changed':'{"user_logged_in":true}',
+          'screen_lock_changed':'{"locked":false}'}[t]||'{"bundle_id":"com.example.app"}';
+}
 function modBoxes(i,mods){
   return ['ctrl','shift','alt','cmd'].map(function(m){
     var on=(mods||[]).indexOf(m)>=0;
@@ -474,7 +484,17 @@ function renderSteps(){
   tb.innerHTML=html;
 }
 function stepField(i,f,v){editingSteps[i][f]=v;}
-function stepType(i,t){editingSteps[i].type=t;renderSteps();}
+function stepType(i,t){
+  var s=editingSteps[i];s.type=t;
+  // Drop fields the new type doesn't take, so saveMacro() can't emit stale
+  // keys (the core rejects any field not in the step's closed schema).
+  if(t!=='key_press'&&t!=='key_combo'&&t!=='key_release')delete s.key;
+  if(t!=='key_combo'&&t!=='modifier_down'&&t!=='modifier_up')delete s.modifiers;
+  if(t!=='text')delete s.value;
+  if(t!=='delay')delete s.delay_ms;
+  if(t==='delay'&&s.delay_ms==null)s.delay_ms=100;  // bind the displayed default
+  renderSteps();
+}
 function stepMod(i,m,on){
   var a=editingSteps[i].modifiers||[];
   var ix=a.indexOf(m);if(on&&ix<0)a.push(m);if(!on&&ix>=0)a.splice(ix,1);
@@ -497,7 +517,9 @@ async function saveMacro(){
   var body={name:el('m-name').value,timeout_ms:parseInt(el('m-timeout').value)||10000,steps:steps};
   if(el('m-evtype').value){
     body.expected_event={type:el('m-evtype').value};
-    if(el('m-evmatch').value){try{body.expected_event.match=JSON.parse(el('m-evmatch').value);}catch(e){showErr('macroedmsg',{code:'bad_request',message:'match is not valid JSON'});return;}}
+    var mv=el('m-evmatch').value.trim();
+    if(!mv){showErr('macroedmsg',{code:'bad_request',message:'expected_event needs its exact-match object (spec 10.1.1), e.g. '+evMatchHint(el('m-evtype').value)});return;}
+    try{body.expected_event.match=JSON.parse(mv);}catch(e){showErr('macroedmsg',{code:'bad_request',message:'match is not valid JSON'});return;}
   }
   try{
     if(editingMacroId){await api('/api/v1/macros/'+editingMacroId,'PUT',body);}

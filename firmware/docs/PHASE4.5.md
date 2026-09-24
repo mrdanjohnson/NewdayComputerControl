@@ -212,3 +212,67 @@ the hotkey. Deferred unless wanted.
 Whatever Scope B accepts (plus the A2 `uptime_s` relabeling: heartbeat
 `uptime_s` stays agent-uptime; the report's `uptime_s` is Mac-uptime —
 document in the amendment note to avoid the same confusion recurring).
+
+## Addendum — independent power + USB link detection
+
+The endpoint must survive Mac outages and *detect* them on its own. The S3
+devkitc is powered from an **independent 5 V supply** (not the Mac), so it
+stays alive — Wi-Fi up, HTTP up, ledger intact — while the Mac sleeps,
+restarts, or powers off. That makes the ESP32's own USB device link to the
+Mac an outage sensor no agent message can fake.
+
+**Wiring** (unchanged landmines):
+
+| Cable | Port | Role |
+|---|---|---|
+| 5 V pin | bench PSU | Endpoint power, independent of the Mac |
+| OTG "usb" port | Mac | TinyUSB HID + the link-state sensor |
+| "com" port (CH343) | Mac | console/flashing only — any serial open/close still reboots the board |
+
+**What firmware does** (`src/usb_link.*`): hooks the Arduino core's
+`USB.onEvent` (the core owns the `tud_*_cb` definitions, so weak-callback
+override would collide) for STARTED/SUSPEND/RESUME/STOPPED, keeps a volatile
+state word + counters in BSS, and drains transitions once per second into
+the log ring (`usb_attached` / `usb_suspended` / `usb_resumed` /
+`usb_detached`, plus one informational `usb_link` at boot).
+`/api/v1/agent/status` gains a static `usb: {link, state, changed_at}`
+section (`link: "up"` only when mounted — suspended means the host stopped
+signaling, i.e. link down).
+
+**The events alone are not enough — the PHY backstop is the real sensor**
+(bench-verified 2026-09-24, full forensics `docs/DEBUG-PHASE45-USB-LINK.md`):
+TinyUSB events and `tud_*()` flags never fire for a mid-session host
+disconnect on the devkitc, and GOTGCTL.BSESVLD is strapped to the board
+rail (useless). What the hardware does report is **DSTS.SUSPSTS** (USB OTG
+base `0x60080000` +`0x808`, bit 0): the DWC core sets it ~3 ms after host
+SOF signaling stops — covering sleep, power-off, and unplug alike. The 1 Hz
+drain therefore reconciles tracked state against `SUSPSTS` +
+`tud_mounted()` and adopts divergences after a **2-tick debounce**
+(re-enumeration flickers the signals one tick apart). A host that sleeps,
+powers off, or unplugs is indistinguishable at this layer by construction —
+classification stays with the table below.
+
+**Host-outage classification** (consumer-side, e.g. the Web UI):
+
+| Observation | Classification |
+|---|---|
+| Declared `agent_goodbye` (sleep/restart/shutdown) | expected_offline |
+| USB suspend + agent silence + same boot_id on wake | host slept |
+| USB down + agent returns with a **new** boot_id | host restarted / power-cycled |
+| Agent silence while USB link stays up | agent or network fault |
+
+**Bench evidence (2026-09-24):** labeled-USB cable unplug ~10 s produced a
+single debounced `usb_detached` → `usb_attached` pair with correct report
+transitions (this doubles as the power-off simulation — identical PHY
+signature; a full Mac power-off test was skipped by decision). A real sleep
+declared itself on the agent channel 24 s *before* `usb_detached`, resumed
+with the same `boot_id`, and classified `expected_offline`. AT-06 and
+AT-11 re-ran green on the final binary.
+
+**Landmine:** both USB ports feed the 5V rail — if the board is powered
+through the cable being pulled, the board reboots (`boot.reset:
+"poweron"`, fresh log ring) and *no* link event can exist. Check the boot
+entry before believing an "invisible event"; keep the board powered via
+the other cable or the bench PSU when exercising link detection.
+
+Classic ESP32 (no USB device controller) reports `no_usb` honestly.

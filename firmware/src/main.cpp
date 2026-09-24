@@ -24,6 +24,7 @@
 #include "nvs_config.h"
 #include "status_cache.h"
 #include "trigger_store.h"
+#include "usb_link.h"
 #include "web_ui.h"
 #include "wifi_mgr.h"
 
@@ -275,7 +276,9 @@ void setup() {
                     .c_str());
     Serial.printf("reset reason: %s\n", reset_reason_str(esp_reset_reason()));
 
-    // USB HID (keyboard-only descriptor per build flag).
+    // USB HID (keyboard-only descriptor per build flag). The link tracker
+    // registers first so the initial enumeration is captured as baseline.
+    usb_link_begin(&g_clock);
     g_hid.begin();
     ctx.hid = &g_hid;
 

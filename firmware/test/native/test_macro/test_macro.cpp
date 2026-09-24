@@ -211,6 +211,36 @@ TEST(MacroFromJson, DefaultsAndMinimalDoc) {
     EXPECT_EQ(m.steps[0].key, "a");
 }
 
+TEST(MacroFromJson, ModifierStepsAcceptPluralAndSingular) {
+    mcco::Macro m;
+    mcco::MacroError err;
+    // Web UI editor shape: one-element `modifiers` array (was wrongly
+    // rejected — the gate only credited the singular `modifier` alias).
+    ASSERT_TRUE(mcco::macro_from_json(
+        R"({"name":"m","steps":[{"order":1,"type":"modifier_down","modifiers":["ctrl"]},{"order":2,"type":"modifier_up","modifiers":["ctrl"]}]})",
+        m, err));
+    EXPECT_EQ(err, mcco::MacroError::Ok);
+    ASSERT_EQ(m.steps.size(), 2);
+    EXPECT_EQ(m.steps[0].type, mcco::StepType::ModifierDown);
+    ASSERT_EQ(m.steps[0].modifiers.size(), 1);
+    EXPECT_EQ(m.steps[0].modifiers[0], "ctrl");
+    EXPECT_EQ(m.steps[1].type, mcco::StepType::ModifierUp);
+    // Singular `modifier` alias stays accepted.
+    ASSERT_TRUE(mcco::macro_from_json(
+        R"({"name":"m","steps":[{"order":1,"type":"modifier_down","modifier":"shift"}]})",
+        m, err));
+    ASSERT_EQ(m.steps[0].modifiers.size(), 1);
+    EXPECT_EQ(m.steps[0].modifiers[0], "shift");
+    // Empty plural array or two modifiers are still invalid.
+    EXPECT_FALSE(mcco::macro_from_json(
+        R"({"name":"m","steps":[{"order":1,"type":"modifier_down","modifiers":[]}]})", m, err));
+    EXPECT_EQ(err, mcco::MacroError::InvalidStep);
+    EXPECT_FALSE(mcco::macro_from_json(
+        R"({"name":"m","steps":[{"order":1,"type":"modifier_down","modifiers":["ctrl","shift"]}]})",
+        m, err));
+    EXPECT_EQ(err, mcco::MacroError::InvalidStep);
+}
+
 TEST(MacroFromJson, RejectsBadStepType) {
     mcco::Macro m;
     mcco::MacroError err;

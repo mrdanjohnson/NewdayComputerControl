@@ -196,4 +196,5 @@
  src/esp_clock.h src/esp_rng.h src/log_sink.h \
  lib/maccontrol_core/mc_log.h lib/maccontrol_core/mc_engine.h \
  lib/maccontrol_core/mc_ids.h lib/maccontrol_core/mc_ledger.h \
- lib/maccontrol_core/mc_pairing.h src/status_cache.h src/ws_server.h
+ lib/maccontrol_core/mc_pairing.h src/status_cache.h src/usb_link.h \
+ src/ws_server.h

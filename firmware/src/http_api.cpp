@@ -26,6 +26,7 @@
 #include "nvs_config.h"
 #include "status_cache.h"
 #include "trigger_store.h"
+#include "usb_link.h"
 #include "macro_runner.h"
 #include "mc_macro.h"
 #include "web_ui.h"
@@ -49,6 +50,9 @@ constexpr uint32_t kWriteTimeoutMs = 4000;
 // Measured steady-state under AT polling: largest ~2.8-4 KB, so 2 KB is the
 // highest watermark that never refuses healthy traffic.
 constexpr size_t kMinLargestFreeBlock = 2048;
+// Epoch values below this are the pre-SNTP fallback timeline (2025-01-01 +
+// uptime); timestamps taken before first sync must be re-derived at render.
+constexpr uint64_t kEpochSanityFloor = 1767225600ULL;  // 2026-01-01T00:00:00Z
 // Idle bound between requests on a kept-alive connection: the server is
 // single-threaded, so a long idle hold blocks every other client (an AT
 // harness opening a fresh connection would queue behind it).
@@ -1837,6 +1841,31 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
             a["pid"] = (int64_t)kv.second.pid;
         }
         mcco::build_agent_system_info(resp["system_info"].to<JsonObject>(), st);
+        {
+            // USB device link to the host: read directly (no agent mutex —
+            // the tracker is independent volatile state, not agent evidence).
+            const UsbLinkState ul = usb_link_state();
+            JsonObject usb = resp["usb"].to<JsonObject>();
+            usb["state"] = usb_link_state_string(ul.state);
+            // "up" only while the host actively signals (mounted). Suspended
+            // means the host stopped signaling (sleep/off/unplug) — the link
+            // is down even though the device may still be enumerated.
+            usb["link"] = (ul.state == kUsbLinkMounted) ? "up" : "down";
+            if (ul.changed_at == 0) {
+                usb["changed_at"] = nullptr;
+            } else if (ul.changed_epoch >= kEpochSanityFloor) {
+                // Written after SNTP sync: stable wall-clock at transition
+                // (re-deriving from a floored age_ms oscillates ±1 s around
+                // sub-second phases of the two integer clocks).
+                usb["changed_at"] = mcco::iso8601_format(ul.changed_epoch).c_str();
+            } else {
+                // Written before first SNTP sync (fallback 2025 timeline):
+                // re-derive from monotonic age so it tracks the real time.
+                const uint64_t age_ms = ctx->clock->millis() - ul.changed_at;
+                usb["changed_at"] =
+                    mcco::iso8601_format(ctx->clock->epoch_seconds() - age_ms / 1000).c_str();
+            }
+        }
         sendJson(200, resp);
         return;
     }

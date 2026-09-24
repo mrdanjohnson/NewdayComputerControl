@@ -316,7 +316,11 @@ static bool fill_from_object(JsonObjectConst o, Macro& m, MacroError& err) {
                         break;
                     case StepType::ModifierDown:
                     case StepType::ModifierUp:
-                        fields_ok = has_modifier && step_content_valid(st);
+                        // One modifier, accepted either as the singular
+                        // `modifier` alias or a one-element `modifiers`
+                        // array (the Web UI editor sends the latter).
+                        fields_ok = (has_modifier || has_modifiers) &&
+                                    step_content_valid(st);
                         break;
                     case StepType::Text:
                         fields_ok = has_value && step_content_valid(st);

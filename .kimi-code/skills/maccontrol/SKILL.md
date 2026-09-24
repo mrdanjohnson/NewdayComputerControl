@@ -1,8 +1,8 @@
 ---
 name: maccontrol
-description: Control a MacControl ESP32 endpoint over its HTTP API — discover and trigger macros, send power commands (wake/sleep/restart/shutdown/lock), read status/capabilities/logs
+description: Control a MacControl ESP32 endpoint over its HTTP API — discover and trigger macros, send power commands (wake/sleep/restart/shutdown/lock), launch/quit allowlisted apps via the paired agent, read status/capabilities/agent telemetry/logs, detect host sleep/offline
 type: prompt
-whenToUse: When the user asks to trigger a macro, lock/wake/sleep/restart/shutdown a Mac, or query the MacControl device on the network
+whenToUse: When the user asks to trigger a macro, lock/wake/sleep/restart/shutdown a Mac, launch or quit an app on the paired Mac, query the MacControl device or its agent telemetry, or check whether the managed Mac is awake/asleep/offline
 arguments:
   - action
 ---
@@ -36,18 +36,22 @@ curl -s -H "Authorization: Bearer $MACCONTROL_KEY" $MACCONTROL_HOST/api/v1/statu
 ```
 
 - Key format: `mck_` + base64url (issued by the device's ADMIN; the Web UI
-  Security tab mints them, raw shown once). **Never invent a key — ask the
-  operator for one.** A keys file may exist at `/tmp/mc_keys.env` on the
-  provisioning Mac (READ_KEY/CONTROL_KEY/ADMIN_KEY) — check there first.
+  Security tab mints them, raw shown once with a Copy button). **Never invent
+  a key — ask the operator for one.** A keys file may exist at
+  `/tmp/mc_keys.env` on the provisioning Mac (READ_KEY/CONTROL_KEY/ADMIN_KEY)
+  — check there first.
 - Roles (strict order READ < CONTROL < ADMIN):
-  - **READ** (default 60 req/min): GET status, capabilities, macros, commands, logs.
-  - **CONTROL** (30 req/min): READ + execute macros + power commands.
+  - **READ** (default 60 req/min): GET status, capabilities, agent/status,
+    macros, commands, logs.
+  - **CONTROL** (30 req/min): READ + execute macros + power commands +
+    app launch/quit.
   - **ADMIN** (10 req/min): + macro/trigger CRUD, identity, key management.
 - Guard rails: wrong/missing key → 401 `unauthorized`; right key, wrong role →
   403 `forbidden`; **10 consecutive failed auths from one source IP locks that
   IP out for 60 s** — test with a valid key, never probe. Rate limit excess →
   429 `rate_limited` (retryable with backoff); 400/403/404/409 are permanent,
-  do not retry unchanged.
+  do not retry unchanged. Poll records no faster than once every 2–3 s — a
+  1/s poller rides the READ bucket's ceiling and starts seeing 429s.
 
 ## 3. Capabilities first
 
@@ -57,11 +61,15 @@ Before acting, read what the device says it can do **right now**:
 curl -s -H "Authorization: Bearer $KEY" $MACCONTROL_HOST/api/v1/capabilities
 ```
 
-In Mode A (no agent paired): `mode: "A"`, `capability_level: "L1"`, every
-command has `verified: false`; `app_launch`/`app_quit` are `available: false`
-(calling them → 409 `agent_not_paired`, no record created). Drive all behavior
-from this document; never act on endpoints it doesn't list. Full contract:
-`GET /api/v1/openapi.json`.
+- **Mode A** (no agent paired): `mode: "A"`, `capability_level: "L1"`, every
+  command has `verified: false`; `app_launch`/`app_quit` are
+  `available: false` (calling them → 409 `agent_not_paired`, no record
+  created). Drive all behavior from this document; never act on endpoints it
+  doesn't list. Full contract: `GET /api/v1/openapi.json`.
+- **Mode B** (agent paired): `capability_level: "L2"`; `app_launch`/
+  `app_quit` report `available: true` and become `verified: true` while an
+  agent session is live. Power/lock/macro verification predicates remain
+  unimplemented — those still terminate `unconfirmed`/`hid_only`.
 
 ## 4. Macros (the main actuation surface)
 
@@ -103,7 +111,96 @@ Mac. `lock` and `sleep` are usually safe to demo; **`restart` and `shutdown`
 interrupt whatever a person is doing on that Mac — always get explicit
 confirmation first**. Same 202 → poll-the-record pattern as macros.
 
-## 6. Status and logs
+Lifecycle notes (Phase 4.5+): sleep/restart/shutdown records carry an
+`expected_offline_window` (`{open_after_s: 3, close_after_s: 60}`), and when a
+paired agent declares the outage (its `agent_goodbye` with reason
+sleep/restart/shutdown), other in-flight confirming records inherit that
+window — the offline sweep then classifies the loss `expected_offline` instead
+of `evidence_lost`. A `sleep` the agent *didn't* declare reads as an ordinary
+offline.
+
+## 6. App launch/quit (Mode B, via the paired agent)
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $CONTROL_KEY" \
+  $MACCONTROL_HOST/api/v1/apps/com.apple.TextEdit/launch    # or /quit
+# -> 202 {"command_id":"...","state":"accepted",...}
+```
+
+- Only allowlisted bundle IDs work; anything else → 409/`forbidden`-class
+  refusal or `failed/app_not_allowlisted` on the record. Enumerate candidates
+  from `agent.status.applications` (below) or the capabilities doc.
+- With a live agent these terminate **honestly completed**:
+  `result: "app_launch_confirmed"` / `"app_quit_confirmed"` (verified via the
+  agent's ack + process observation). Agent offline or quit refused →
+  `timed_out`/`failed` with the closed error codes (`app_not_running`,
+  `quit_failed`, `action_timeout`, ...).
+- Mode A: 409 `agent_not_paired`, no record created.
+
+## 7. Agent status & telemetry (Mode B)
+
+```bash
+curl -s -H "Authorization: Bearer $READ_KEY" $MACCONTROL_HOST/api/v1/agent/status
+```
+
+The composite MCA report (spec 6.3, Phase 4.5 complete). Mode A → 409
+`agent_not_paired`. Shape (every leaf is **null when the evidence is absent —
+never invented**, spec 9 honesty):
+
+```json
+{
+  "agent_instance_id": "ag-4d00",
+  "boot_id": "b_578FC7",            // changes iff the MAC rebooted
+  "reported_at": "...Z",
+  "session_id": "s_XXXX",           // null when no live session
+  "session_active": true,
+  "system":  {"state": "awake"},    // awake|sleeping|waking|shutting_down|restarting|booting
+  "user":    {"logged_in": true, "name": "danieljohnson", "screen_locked": false},
+  "applications": {"com.apple.TextEdit": {"running": true, "pid": 12345}},
+  "system_info": {
+    "cpu_utilization_pct": 37.6,    // live samples, move every heartbeat
+    "memory_utilization_pct": 74.1,
+    "disk_free_bytes": 59629400064,
+    "network": {"reachable": true, "ip": "10.10.40.99"},
+    "uptime_s": 6069516,            // MAC uptime seconds (not the agent's!)
+    "boot_time": 1784123335,        // Mac boot, epoch seconds
+    "os_version": "15.7.4",
+    "hardware_model": "Mac16,9",
+    "front_app": "com.wiheads.paste"  // frontmost bundle id (may lag headless)
+  },
+  "usb": {"link": "up", "state": "mounted", "changed_at": "...Z"}
+}
+```
+
+Reading it:
+- **"Is the Mac awake?"** → `system.state` + `session_active`.
+- **"Did the Mac reboot?"** → compare `boot_id` across calls; a restart also
+  shows as `system.state: "booting"` then `awake` with a new `boot_id`.
+- **"What's it doing?"** → `front_app`, `applications`, load samples.
+- Caution: the agent's heartbeat wire field `uptime_s` is the *agent process*
+  uptime; only this report's `system_info.uptime_s` is Mac uptime.
+
+## 8. Host-outage detection (USB link)
+
+The endpoint watches its own USB device link to the Mac, so it can tell a
+sleeping/off Mac from a network fault (Phase 4.5 addendum). Log events in
+`category=system`: `usb_attached` / `usb_suspended` / `usb_resumed` /
+`usb_detached`; live state in `agent.status.usb` (`link: "up"` only while
+`state: "mounted"`; suspended/detached = host not signaling). Classification
+table for consumers:
+
+| Observation | Conclusion |
+|---|---|
+| Declared `agent_goodbye` (sleep/restart/shutdown) in the logs | expected_offline — records inside the window survive the offline sweep |
+| USB link down + agent silence + **same** `boot_id` on return | host slept |
+| USB link down + agent returns with a **new** `boot_id` | host restarted / power-cycled |
+| Agent silence while USB link stays **up** | agent or network fault (the endpoint is reachable, the agent isn't) |
+
+The USB layer cannot distinguish sleep from power-off from unplug by
+construction — sleep-vs-restart comes from `boot_id`, commanded outages from
+the declared goodbye.
+
+## 9. Status and logs
 
 ```bash
 curl -s -H "Authorization: Bearer $KEY" $MACCONTROL_HOST/api/v1/status   # provenance-tagged tuples
@@ -111,18 +208,30 @@ curl -s -H "Authorization: Bearer $KEY" "$MACCONTROL_HOST/api/v1/logs?limit=20&c
 ```
 
 Logs (spec 15.2): ascending `seq`, filters `category` (command|session|auth|
-config|ota|system), `level` (info|warn|error), `since_seq`, `limit` (max 512);
-`dropped` counts entries overwritten by the 512-entry ring buffer.
+config|ota|system), `level` (info|warn|error), `since_seq`, `limit`; `dropped`
+counts entries overwritten by the RAM ring. **This S3 unit ships a 128-entry
+ring** (spec default is 512; the 320 KB part can't spare the heap) — long
+soaks wrap quickly, so page with `since_seq` rather than big `limit`s. Useful
+filter pairs: `category=system` (boot/reset/usb/heap events — read `boot`'s
+`reset` field to classify reboots: `poweron` vs watchdog/abort),
+`category=command&limit=…` (agent evidence trail),
+`category=session` (agent connect/offline history).
 
-## 7. Safety rules for agents
+## 10. Safety rules for agents
 
 1. **The USB keyboard target is fixed**: keystrokes go to the Mac physically
    plugged into the ESP32, regardless of which machine sends the request.
-2. **Confirm before any actuation** (macro execute, power command) unless the
-   operator's request was unambiguous and explicitly named the action.
-3. Never retry a 4xx; honor 429 with backoff. Never fire requests in a tight
-   loop (flash wear on the ledger is a real constraint).
+2. **Confirm before any actuation** (macro execute, power command, app
+   quit — quit interrupts the person's app) unless the operator's request was
+   unambiguous and explicitly named the action.
+3. Never retry a 4xx; honor 429 with backoff; poll no faster than once every
+   2–3 s (see §2). Never fire requests in a tight loop (flash wear on the
+   ledger is a real constraint).
 4. Transport is unencrypted HTTP on a trusted LAN: don't exfiltrate keys,
    don't send them anywhere off-network.
 5. Admin-only mutations (macro CRUD, identity, keys) need an ADMIN key and
    should be treated as configuration changes — propose, then act on approval.
+6. **Keystroke-bearing endpoints require a live USB link**: if
+   `agent.status.usb.link` is `down`, the attached Mac is asleep/off/unplugged
+   — HID commands will terminate `usb_disconnected`/`unconfirmed`; wake the
+   Mac (§5 `wake`) rather than retrying.

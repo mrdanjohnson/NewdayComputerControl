@@ -11,6 +11,7 @@
 #include "mc_log.h"
 #include "mc_pairing.h"
 #include "status_cache.h"
+#include "usb_link.h"
 #include "ws_server.h"
 
 namespace {
@@ -616,6 +617,9 @@ void AgentLink::taskEntry(void* arg) {
 }
 
 void AgentLink::tick() {
+    // USB link drain (housekeeping; not agent-scoped but this 1 s tick has
+    // the cleanest log/clock access and already logs liveness events).
+    usb_link_service(*ctx_->log, *ctx_->clock);
     mcco::AgentSession* s = nullptr;
     mcco::AgentConnState st = mcco::AgentConnState::AwaitingHello;
     std::string sid;

@@ -7,7 +7,7 @@ work. This file captures what changes day-to-day; keep it in sync.
 ## Commands
 
 ```bash
-./.venv/bin/pio test -e native                 # 119 host tests — run before EVERY flash
+./.venv/bin/pio test -e native                 # 120 host tests — run before EVERY flash
 ./.venv/bin/pio run -e esp32-s3-devkitc-1      # primary target (S3)
 ./.venv/bin/pio run -e esp32-wroom-32          # classic ESP32 (no USB HID)
 ./.venv/bin/pio run -e esp32-s3-devkitc-1 -t upload   # flash (uses UART port)
@@ -31,7 +31,7 @@ in `.venv` themselves. The Mac agent runs from `../agent` with its own venv
 - `scripts/` — acceptance runners (`at*.py`, `mc_http.py` keep-alive helper,
   `serial_cli.py`). Gates need **two consecutive green runs on one boot**.
 - `docs/` — PHASE1–4.5 logs, `HANDOFF.md`, `DEBUG-PHASE4-AT11.md`,
-  `DEBUG-PHASE45-AT11.md`.
+  `DEBUG-PHASE45-AT11.md`, `DEBUG-PHASE45-USB-LINK.md`.
 
 ## Hard-won constraints (violating these has cost reboots)
 
@@ -69,6 +69,13 @@ in `.venv` themselves. The Mac agent runs from `../agent` with its own venv
   banner + fresh WiFi association on open is the tell. Never diagnose a
   live network fault by opening serial — you destroy the evidence.
 - UART-bridge port = flashing/console; USB-OTG port = HID to the Mac.
+  Cable labels: **"USB" = native OTG (HID keyboard + monitored host link,
+  `usb_*` log events)**; **"com" = CH343 UART (console/flashing only)**.
+  Both ports feed the 5V rail — pulling the cable that is currently
+  powering the board reboots it with no link event possible; check
+  `boot.reset` ("poweron" + fresh ring) before believing an invisible
+  disconnect. Host sleep/off/unplug is sensed via DSTS.SUSPSTS, not
+  TinyUSB (which is blind to it) — see `docs/DEBUG-PHASE45-USB-LINK.md`.
 - If the radio goes silent while the CLI is alive: check `[heap]` first
   (fragmentation presents exactly like an AP problem). Do NOT add
   outbound-probe "supervisors" — tried, reverted, documented in

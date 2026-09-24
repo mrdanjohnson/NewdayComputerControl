@@ -22,8 +22,23 @@ phase doc for the work at hand. Project root:
 > bench S3 flashed with the Phase 4.5 binary. Residual watch items: wake
 > deltas can double-report on Power Nap dark wakes (cosmetic); the stale
 > pid on not-running apps in `/agent/status` applications map (spec-9
-> question). **Next: Phase 5 — AT-07/08/09 (verified lifecycle; power-command
-> predicates, expected-offline AT coverage).**
+> question).
+>
+> **2026-09-24: USB host-link detection shipped + verified.** Independent-
+> power route: the endpoint now senses Mac sleep/off/unplug itself via its
+> own USB device link (`src/usb_link.*`, DSTS.SUSPSTS PHY backstop with a
+> 2-tick debounce — TinyUSB events/flags and BSESVLD are all blind on the
+> devkitc; forensics `docs/DEBUG-PHASE45-USB-LINK.md`). Report field
+> `/api/v1/agent/status → usb {link,state,changed_at}`; log events
+> `usb_attached/suspended/resumed/detached`. Verified: labeled-USB cable
+> unplug (single debounced pair — doubles as the power-off simulation, same
+> PHY signature; full power-off test skipped by decision) and a real sleep
+> (declaration 24 s before link loss, same boot_id, expected_offline).
+> AT-06 + AT-11 re-ran green on the final binary. The bench is still
+> bus-powered; the 5 V PSU rewiring remains the user's hardware task before
+> true outage-survival is exercised. **Next: Phase 5 — AT-07/08/09
+> (verified lifecycle; power-command predicates, expected-offline AT
+> coverage).**
 
 > **Numbering note:** the PRD (§17.2) counts six phases with the MCA work as
 > its Phase 3; this repo's docs count it as Phase 4. So the repo's
