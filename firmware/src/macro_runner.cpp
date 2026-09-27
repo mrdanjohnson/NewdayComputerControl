@@ -200,13 +200,20 @@ void run_macro(AppContext* ctx, const char* command_id) {
         esp_task_wdt_reset();
     }
 
-    // Success: release any residue and close with the Mode A verdict
-    // (unconfirmed/hid_only — macros never claim completion, spec 5.2.2).
+    // Success: release any residue and close the verdict. In Mode B a macro
+    // that declares an expected_event stays `confirming` until a matching
+    // ambient event completes it (macro_confirmed); every other macro ends
+    // honestly unconfirmed/hid_only (spec 10.3.1).
     ctx->hid->allKeysUp();
+    mcco::CommandState st = mcco::CommandState::Failed;
     {
         Guard g(ctx->engine_mutex);
-        ctx->engine->terminate_mode_a(command_id, true);
+        ctx->engine->macro_interpret_done(command_id);
+        const mcco::CommandRecord* rec = ctx->engine->get(command_id);
+        if (rec) st = rec->state;
     }
     ctx->log->write(mcco::LogCategory::Command, mcco::LogLevel::Info, "macro_terminal",
-                    command_id, nullptr, nullptr, "{\"state\":\"unconfirmed\"}");
+                    command_id, nullptr, nullptr,
+                    st == mcco::CommandState::Confirming ? "{\"state\":\"confirming\"}"
+                                                         : "{\"state\":\"unconfirmed\"}");
 }

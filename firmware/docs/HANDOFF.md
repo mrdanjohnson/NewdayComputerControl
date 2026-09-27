@@ -6,6 +6,24 @@ phase doc for the work at hand. Project root:
 
 ## Phase 5 kickoff (current state — start here)
 
+> **2026-09-24 (late): Phase 5 FOUNDATION complete — host-verified, not
+> flashed.** Verification predicates live: Mode B power/lock/wake/macro
+> commands stay `confirming` and complete on MCA evidence per spec
+> 5.3.1/§8/§10.3.1 (`lock_confirmed`, `wake_confirmed` on new-session hello +
+> awake burst, `sleep_confirmed` at window close, `restart_confirmed` on
+> changed boot_id + awake burst, `shutdown_confirmed` on window +
+> ICMP-unreachable; negatives `unexpected_wake`/`unexpected_reconnect`/
+> `host_still_reachable`). §7.2.2 `expected_offline` status provenance
+> implemented (AT-09's surface). Capabilities: power/lock/macro
+> `verified = paired && connected`, L1/L2/L3 levels. Engine intervals moved
+> to a monotonic RAM sidecar (SNTP-jump-safe). Conformance pins for late/
+> duplicate results + evidence dedup. **144/144 native tests; both envs
+> compile.** Full log + behavior decisions: `docs/PHASE5.md`. Remaining for
+> Phase 5: bench rewire (5 V PSU) + separate target Mac, first flash, AT-06/
+> AT-11 regression, then AT-07/08/09 scripts. The agent-side items
+> (commanded-vs-user sleep mark, restart/shutdown goodbye reasons) turned
+> out to be optional hardening — the predicates are device-observed.
+>
 > **2026-09-23 (late): Phase 4.5 is COMPLETE and hardware-verified.** MCA
 > telemetry per `docs/PHASE4.5.md`: full §6.3 `system_info` report on both
 > sides (load samples, Mac uptime/boot_time, os_version/hardware_model,
@@ -352,6 +370,6 @@ python3 -m venv .venv && ./.venv/bin/pip install platformio   # if .venv missing
   `launchd/com.maccontrol.agent.plist`, README
 - `firmware/scripts/at01_at02.py`, `at03_at04.py`, `at05.py`, `at06.py`,
   `at11.py` — acceptance runners
-- `firmware/docs/PHASE1.md` … `PHASE4.5.md` (PHASE5/6 pending) —
-  per-phase build/verify guides + bring-up logs (`PHASE4.5.md` is the
-  current next step)
+- `firmware/docs/PHASE1.md` … `PHASE5.md` (PHASE6 pending) —
+  per-phase build/verify guides + bring-up logs (`PHASE5.md` is the current
+  state; `PHASE4.5.md` the telemetry phase)

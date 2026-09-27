@@ -294,7 +294,7 @@ void HttpApi::begin(AppContext* ctx, uint16_t port) {
     g_write_ctx = ctx;
     server_ = new WiFiServer(port);
     server_->begin();
-    xTaskCreate(taskEntry, "mc_http", 10240, this, 5, &task_);
+    xTaskCreate(taskEntry, "mc_http", 7168, this, 5, &task_);
     esp_task_wdt_add(task_);
 }
 
@@ -827,7 +827,7 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
             }
             std::string resp_json;
             mcco::ErrCode err = mcco::ErrCode::InternalError;
-            if (!ctx->agent_link->pollEvent(bearerToken(req.auth), req.session_hdr, req.body,
+            if (!ctx->agent_link->pollEvent(bearerToken(req.auth), req.session_hdr, req.body, ip,
                                             resp_json, err)) {
                 sendError(err);
                 return;

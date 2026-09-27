@@ -197,4 +197,4 @@
  lib/maccontrol_core/mc_status.h src/hid_keyboard.h src/log_sink.h \
  lib/maccontrol_core/mc_log.h lib/maccontrol_core/mc_engine.h \
  lib/maccontrol_core/mc_ids.h lib/maccontrol_core/mc_ledger.h \
- src/macro_runner.h
+ src/macro_runner.h src/power_probe.h

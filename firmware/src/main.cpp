@@ -224,15 +224,27 @@ void setup() {
         return res;
     });
     // Phase 4 (spec 5.3.1/11.2.1): pre-ledger gate for agent-dependent
-    // submissions. submit() runs with engine_mutex already held, so the gate
+    // submissions; Phase 5 extends it to the session-gated power commands.
+    // submit() runs with engine_mutex already held, so the gate
     // must not lock engine_mutex again — pairing is already covered by the
     // caller's lock; the session flag is a lock-free atomic and the evidence
     // snapshot takes only the status-cache mutex (engine -> cache order).
     g_engine.set_mode(g_pairing->paired() ? 'B' : 'A');
     g_engine.set_agent_gate([](const mcco::Submission& sub) -> std::optional<mcco::ErrCode> {
         using mcco::ErrCode;
-        if (sub.type != mcco::CommandType::AppLaunch && sub.type != mcco::CommandType::AppQuit)
+        const bool app_cmd =
+            sub.type == mcco::CommandType::AppLaunch || sub.type == mcco::CommandType::AppQuit;
+        if (!app_cmd) {
+            // lock/sleep/restart/shutdown (the engine only invokes the gate
+            // for these): in Mode B the evidence channel must be live at
+            // submit (spec 5.3.1/12.1.1). wake is deliberately absent — at
+            // wake time the Mac is asleep and the session is necessarily
+            // dead (spec 8.1.2). Mode A (unpaired) power commands dispatch
+            // over HID and accept with no gate.
+            if (ctx.pairing->paired() && !ctx.agent_link->sessionActive())
+                return ErrCode::AgentOffline;
             return std::nullopt;
+        }
         if (!ctx.pairing->paired()) return ErrCode::AgentNotPaired;
         if (!ctx.agent_link->sessionActive()) return ErrCode::AgentOffline;
         const mcco::AgentStatus st = ctx.status_cache->snapshotAgent();
@@ -290,6 +302,24 @@ void setup() {
     ctx.status_cache = &g_status_cache;
     g_status_cache.begin(&ctx);
     ctx.status_cache->onMacrosChanged(); // advertise the loaded macro ids (12.3.1)
+
+    // Phase 5 (spec 8.2.1): hydrate the last known agent boot_id so the
+    // restart identity comparison survives an ESP32 reboot mid-window. The
+    // cache write completes (mutex released) before engine_mutex is taken —
+    // lock order engine_mutex -> cache mutex must never be reversed.
+    {
+        std::string boot;
+        if (g_config.loadAgentBootId(boot) && !boot.empty()) {
+            {
+                mcco::AgentStatus st = g_status_cache.snapshotAgent();
+                st.has_boot = true;
+                st.boot_id = boot;
+                g_status_cache.setAgentStatus(st);
+            }
+            Guard g(ctx.engine_mutex);
+            g_engine.set_known_boot_id(boot.c_str());
+        }
+    }
 
     ctx.wifi = &g_wifi;
     g_wifi.begin(&ctx);

@@ -50,14 +50,16 @@ public:
     // receives dispatch_pending=true and must later call complete_dispatch().
     SubmissionOutcome submit(const Submission& sub);
 
-    // Mode A dispatch completion: appends `dispatched`, then immediately the
-    // terminal verdict — `unconfirmed`/`hid_only` on success (never
-    // `completed` without MCA evidence), `failed`/`dispatch_error` on HID
-    // failure. Exception: app_launch/app_quit in Mode B stay `confirming`
-    // after dispatch — the terminal verdict arrives via agent_event() or the
-    // deadline sweep (spec 5.2.1). `deadline_override_s` lets the dispatcher
-    // set the authoritative per-macro deadline (timeout_ms/1000 + 5, spec
-    // 10.3.1); 0 keeps the per-type default.
+    // Dispatch completion: appends `dispatched`, then either the immediate
+    // terminal verdict or — in Mode B — `confirming`. Mode A: `unconfirmed`/
+    // `hid_only` on success (never `completed` without MCA evidence),
+    // `failed`/`dispatch_error` on HID failure. Mode B: ALL command types
+    // stay `confirming` after successful dispatch (spec 5.2.1, PRD §17.2.1);
+    // the terminal verdict arrives via agent_event()/on_agent_hello()/
+    // sweep_windows()/on_shutdown_probes() or the deadline sweep.
+    // `deadline_override_s` lets the dispatcher set the authoritative
+    // per-macro deadline (timeout_ms/1000 + 5, spec 10.3.1); 0 keeps the
+    // per-type default.
     bool complete_dispatch(const std::string& command_id, bool dispatch_ok,
                            uint32_t deadline_override_s = 0);
 
@@ -80,28 +82,68 @@ public:
     // Correlate one admitted MCA frame with an in-flight agent command.
     // command_ack/command_result address a record by command_id;
     // application_started/application_exited match the newest confirming
-    // app_launch/app_quit record on exact bundle_id. The app predicates
-    // complete only on command_ack PLUS the matching application event
-    // (either order); command_result(ok) alone never completes (spec 5.3.1).
-    // Evidence pointing at a record not in `confirming` is ignored, never an
-    // error (spec 6.1.1). Returns true if a ledger record advanced.
+    // app_launch/app_quit record on exact bundle_id; the five ambient types
+    // (agent_hello, system_state_changed, user_session_changed,
+    // screen_lock_changed, application_*) feed the spec 5.3.1/§8 power/lock/
+    // wake and macro expected_event predicates. The app predicates complete
+    // only on command_ack PLUS the matching application event (either order);
+    // command_result(ok) alone never completes (spec 5.3.1). Evidence pointing
+    // at a record not in `confirming` is ignored, never an error (spec 6.1.1).
+    // Returns true if a ledger record advanced.
     bool agent_event(const AgentEvent& ev);
+
+    // A new MCA session announced itself (agent_hello). `prev_boot_id` is the
+    // boot_id the glue held before this hello (empty/`had_boot=false` when no
+    // baseline exists); the engine falls back to its own cached copy for the
+    // restart identity comparison. Drives the wake/restart/sleep/shutdown
+    // reconnect predicates (spec §8). Returns the number of records advanced.
+    size_t on_agent_hello(const char* boot_id, bool had_boot, const char* prev_boot_id);
+
+    // Seed the engine's cached agent boot_id (glue hydrates from NVS at boot
+    // so the restart comparison survives an ESP32 reboot mid-window, §8.2.1).
+    // Updated automatically by on_agent_hello()/agent_hello frames.
+    void set_known_boot_id(const char* boot_id);
 
     // Terminate confirming records whose deadline has passed
     // (timed_out/deadline_exceeded, spec 5.2.1). Called periodically by the
     // glue. Returns the number of records advanced.
     size_t sweep_deadlines();
 
+    // Evaluate the spec 5.3.2 expected-offline windows of confirming
+    // sleep/restart/shutdown records against the monotonic clock: an offline
+    // onset inside [open, close] held through close completes sleep
+    // (sleep_confirmed). `channel_offline` is the glue's current liveness
+    // verdict, a backstop for silence onsets the offline notification missed.
+    // Returns the number of records advanced.
+    size_t sweep_windows(bool channel_offline);
+
     // The evidence channel was lost (30 s of silence / session closed): every
     // confirming record without an expected-offline window terminates
-    // unconfirmed/evidence_lost (spec 5.2.1). Returns the number advanced.
+    // unconfirmed/evidence_lost (spec 5.2.1); windowed records absorb the
+    // onset — inside the window it is positive evidence, before open it is a
+    // pre-existing channel fault (§8). Returns the number advanced.
     size_t on_agent_offline();
 
     // The agent declared a sleep/restart/shutdown via agent_goodbye: every
     // confirming record gets the spec 5.3.2 expected-offline window (3/60 s),
-    // so a subsequent on_agent_offline() sweep spares it. Returns the number
-    // of records revised.
+    // so a subsequent on_agent_offline() sweep spares it; windowed power
+    // records absorb the declared onset as positive offline evidence (inside
+    // the window) or evidence_lost (before open). Returns the number of
+    // records revised.
     size_t on_agent_declared_offline();
+
+    // Corroborating ICMP probe result for a confirming shutdown record
+    // (spec 8.2.2, driven by the glue's probe state machine): any reachable
+    // reply fails the command host_still_reachable; the third consecutive
+    // failure completes it shutdown_confirmed. Returns the number advanced.
+    size_t on_shutdown_probes(bool any_reachable);
+
+    // Glue support for the spec 8.2.2 corroboration probe (src/power_probe):
+    // true while the probe phase is open — at least one shutdown record is
+    // confirming with an expected-offline window whose close boundary has
+    // passed on the monotonic clock and the evidence channel is offline.
+    // Const; the caller holds engine_mutex.
+    bool shutdown_probe_open(bool channel_offline) const;
 
     // ---- Macro dispatch pipeline (spec 10.3.1) ------------------------------
     // Macros interpret *after* the `dispatched` revision, unlike power chords
@@ -122,6 +164,13 @@ public:
     //   `unconfirmed`/`hid_only`; ok=false appends `failed`/`dispatch_error`
     //   (mirrors the private logic of complete_dispatch).
     bool terminate_mode_a(const std::string& command_id, bool ok);
+    // Macro interpretation finished without abort: in Mode B, a macro whose
+    // definition declares an expected_event (resolved via the macro_resolver
+    // hook) stays `confirming` until a matching ambient event completes it
+    // (macro_confirmed) or the deadline sweep times it out; every other macro
+    // gets the honest `unconfirmed`/`hid_only` (spec 10.3.1). Replaces
+    // terminate_mode_a on the success path.
+    bool macro_interpret_done(const std::string& command_id);
 
     // Macro store hook (spec 10.3): the HTTP layer resolves macro_id against
     // the MacroStore before the engine persists a macro_execute submission;
@@ -129,6 +178,9 @@ public:
     struct MacroResolution {
         bool found = false;
         uint32_t timeout_ms = 10000;
+        bool has_expected_event = false;   // spec 10.1.1 Mode B verification
+        std::string expected_event_type;   // one of the five ambient types
+        std::string expected_match_json;   // exact-match object over payload keys
     };
     void set_macro_resolver(std::function<MacroResolution(const std::string& macro_id)> r) {
         macro_resolver_ = std::move(r);
@@ -152,6 +204,38 @@ public:
 private:
     static bool validate_parameters(CommandType t, const std::string& params_json);
 
+    // Predicate progress for one in-flight (confirming) command. Field set per
+    // spec 5.3.1/§8; boot_id_at_dispatch caches the agent boot_id observed at
+    // dispatch (restart identity comparison, §8.2.1), probe_fails counts
+    // consecutive unreachable probe rounds (§8.2.2).
+    struct PredProgress {
+        bool ack = false;                 // command_ack seen (app predicates)
+        bool app_event = false;           // matching application_* seen
+        bool hello = false;               // qualifying post-dispatch hello seen
+        bool offline_evidence = false;    // windowed offline onset absorbed
+        bool declared = false;            // onset came from a declared goodbye
+        uint8_t probe_fails = 0;          // shutdown probe counter
+        std::string boot_id_at_dispatch;  // restart baseline (empty = unknown)
+    };
+
+    // Monotonic-clock sidecar for interval arithmetic (spec: intervals on
+    // IClock::millis(); the ledger's epoch fields stay the wire format and go
+    // garbage across the SNTP sync jump). Entries are seeded at accept /
+    // dispatch and erased alongside agent_pred_ on terminal transitions.
+    struct MonoDeadline {
+        uint64_t accepted_mono_ms = 0;
+        uint64_t dispatched_mono_ms = 0;
+        uint64_t deadline_mono_ms = 0;
+    };
+
+    void drop_side(const std::string& command_id) {
+        agent_pred_.erase(command_id);
+        mono_.erase(command_id);
+    }
+    size_t handle_hello(const char* boot_id, bool had_boot, const char* prev_boot_id,
+                        const char* event_id);
+    bool match_macro_event(const AgentEvent& ev);
+
     Ledger& ledger_;
     IClock& clock_;
     IRandom& rng_;
@@ -168,8 +252,9 @@ private:
     std::map<std::string, std::string> hash_by_command_; // derived-coalescing hashes
     std::function<MacroResolution(const std::string&)> macro_resolver_;
     std::function<std::optional<ErrCode>(const Submission&)> agent_gate_;
-    // app predicate progress per in-flight command: {ack_seen, app_event_seen}
-    std::map<std::string, std::pair<bool, bool>> agent_pred_;
+    std::map<std::string, PredProgress> agent_pred_;
+    std::map<std::string, MonoDeadline> mono_;
+    std::string known_boot_id_; // last agent boot_id (NVS-backed by the glue)
     static constexpr uint64_t kCoalesceWindowS = 60; // spec 5.1.1
 };
 

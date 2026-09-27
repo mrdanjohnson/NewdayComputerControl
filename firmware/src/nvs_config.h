@@ -54,6 +54,13 @@ public:
     bool hydratePairing(mcco::PairingStore& ps);
     bool persistPairing(const mcco::PairingStore& ps);
 
+    // Last known agent boot_id (spec 8.2.1): the restart identity comparison
+    // must survive an ESP32 reboot mid-window. The glue throttles writes
+    // (change-only, >= 60 s apart) and hydrates at boot into the status cache
+    // plus engine->set_known_boot_id().
+    bool persistAgentBootId(const std::string& boot_id);
+    bool loadAgentBootId(std::string& boot_id); // false: no record yet
+
     // Generates the factory identity: device_id from the eFuse MAC
     // (mcco::hex12), hostname "mac-" + last 6 lowercase hex of the MAC,
     // device_name "MacControl".

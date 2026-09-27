@@ -13,7 +13,10 @@ struct FakeClock : mcco::IClock {
     uint64_t mono_ms = 0;
     uint64_t epoch_seconds() const override { return epoch; }
     uint64_t millis() const override { return mono_ms; }
-    void advance_seconds(uint64_t s) { epoch += s; }
+    void advance_seconds(uint64_t s) {
+        epoch += s;
+        mono_ms += s * 1000;
+    }
     void advance_ms(uint64_t ms) { mono_ms += ms; }
 };
 

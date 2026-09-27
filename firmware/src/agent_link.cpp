@@ -10,6 +10,7 @@
 #include "mc_engine.h"
 #include "mc_log.h"
 #include "mc_pairing.h"
+#include "nvs_config.h"
 #include "status_cache.h"
 #include "usb_link.h"
 #include "ws_server.h"
@@ -18,6 +19,22 @@ namespace {
 constexpr uint32_t kWsReadTimeoutS = 1;
 constexpr uint32_t kHelloTimeoutS = 5;
 constexpr size_t kFrameCap = 4096;
+
+// NVS persist of the agent boot_id (spec 8.2.1), throttled like the key
+// last_used quantization pattern: change-only, at most every 60 s. A
+// throttled-out change is retried on the next hello (the helper re-checks
+// the change against the last persisted value).
+std::string g_persisted_boot_id;
+uint32_t g_last_boot_persist_ms = 0;
+
+void maybe_persist_boot_id(AppContext* ctx, const std::string& boot_id) {
+    if (boot_id.empty() || boot_id == g_persisted_boot_id) return;
+    if (g_last_boot_persist_ms != 0 && millis() - g_last_boot_persist_ms < 60000) return;
+    if (ctx->config && ctx->config->persistAgentBootId(boot_id)) {
+        g_persisted_boot_id = boot_id;
+        g_last_boot_persist_ms = millis();
+    }
+}
 
 const char* parse_error_string(mcco::AgentEventError e) {
     switch (e) {
@@ -78,6 +95,7 @@ mcco::AgentSession* AgentLink::beginSessionLocked(uint8_t transport) {
     // at OFFLINE. WS sessions set this when the socket dies mid-session.
     socket_dead_ = (transport == 2);
     pending_close_ = 0; // a queued close can only have targeted the incumbent
+    pending_close_offline_effect_ = true;
     last_conn_state_ = mcco::AgentConnState::AwaitingHello;
     return session_;
 }
@@ -90,18 +108,32 @@ void AgentLink::applyHello(const mcco::AgentEvent& ev) {
     }
     mcco::AgentStatus st = ctx_->status_cache->snapshotAgent();
     const uint64_t now = ctx_->clock->epoch_seconds();
+    // The restart identity comparison (spec 8.2.1) needs the boot_id held
+    // BEFORE this hello overwrites it.
+    const bool had_boot = st.has_boot;
+    const std::string prev_boot = st.boot_id;
     st.paired = true;
     st.session_live = true;
     st.last_frame_at = now;
+    st.declared_offline_until = 0; // a hello refutes any declared absence
+    const char* hello_boot = nullptr;
     JsonDocument p;
     if (!deserializeJson(p, ev.payload_json) && p.is<JsonObjectConst>()) {
         const char* boot = p["boot_id"].as<const char*>();
         if (boot) {
+            hello_boot = boot;
             st.has_boot = true;
             st.boot_id = boot;
             st.boot_at = now;
         }
     }
+    {
+        Guard g(ctx_->engine_mutex);
+        // New-session hello drives the wake/restart/sleep/shutdown reconnect
+        // predicates (spec §8); the payload doc stays alive for the call.
+        ctx_->engine->on_agent_hello(hello_boot, had_boot, prev_boot.c_str());
+    }
+    maybe_persist_boot_id(ctx_, st.boot_id);
     ctx_->status_cache->setAgentStatus(st);
     ctx_->status_cache->onAgentChanged();
     ctx_->log->write(mcco::LogCategory::Session, mcco::LogLevel::Info, "agent_hello", nullptr,
@@ -109,17 +141,19 @@ void AgentLink::applyHello(const mcco::AgentEvent& ev) {
 }
 
 void AgentLink::applyEvidence(const mcco::AgentEvent& ev) {
-    {
-        Guard g(ctx_->engine_mutex);
-        ctx_->pairing->touchLastUsed();
-        ctx_->engine->agent_event(ev);
-    }
-    const uint64_t now = ctx_->clock->epoch_seconds();
     mcco::AgentStatus st = ctx_->status_cache->snapshotAgent();
+    const uint64_t now = ctx_->clock->epoch_seconds();
+    // Restart identity comparison (spec 8.2.1): capture BEFORE the Hello
+    // case below overwrites boot_id.
+    const bool had_boot = st.has_boot;
+    const std::string prev_boot = st.boot_id;
     st.paired = true;
     st.session_live = true;
     st.last_frame_at = now;
 
+    // The Hello payload pointer stays valid into the engine call below (the
+    // JsonDocument outlives it).
+    const char* hello_boot = nullptr;
     JsonDocument p;
     if (!deserializeJson(p, ev.payload_json) && p.is<JsonObjectConst>()) {
         JsonObjectConst o = p.as<JsonObjectConst>();
@@ -127,10 +161,13 @@ void AgentLink::applyEvidence(const mcco::AgentEvent& ev) {
             case mcco::AgentEventType::Hello: {
                 const char* boot = o["boot_id"].as<const char*>();
                 if (boot) {
+                    hello_boot = boot;
                     st.has_boot = true;
                     st.boot_id = boot;
                     st.boot_at = now;
                 }
+                // A hello refutes any declared expected-offline window.
+                st.declared_offline_until = 0;
                 break;
             }
             case mcco::AgentEventType::SystemStateChanged: {
@@ -244,10 +281,13 @@ void AgentLink::applyEvidence(const mcco::AgentEvent& ev) {
             }
             case mcco::AgentEventType::Goodbye: {
                 // A declared sleep/restart/shutdown means channel loss is
-                // expected: confirming records get an offline window (5.3.2).
+                // expected: confirming records get an offline window (5.3.2),
+                // and the status renderers freeze agent-derived fields at
+                // expected_offline until now + 60 s (spec 7.2.2).
                 const char* r = o["reason"].as<const char*>();
                 if (r && (strcmp(r, "sleep") == 0 || strcmp(r, "restart") == 0 ||
                           strcmp(r, "shutdown") == 0)) {
+                    st.declared_offline_until = now + 60;
                     Guard g(ctx_->engine_mutex);
                     ctx_->engine->on_agent_declared_offline();
                 }
@@ -257,6 +297,17 @@ void AgentLink::applyEvidence(const mcco::AgentEvent& ev) {
                 break; // command_ack/command_result: no status fields
         }
     }
+    {
+        Guard g(ctx_->engine_mutex);
+        ctx_->pairing->touchLastUsed();
+        ctx_->engine->agent_event(ev);
+        if (ev.type == mcco::AgentEventType::Hello) {
+            // A mid-session hello frame is the same reconnect signal as a
+            // new-session hello (spec §8): drive the reconnect predicates.
+            ctx_->engine->on_agent_hello(hello_boot, had_boot, prev_boot.c_str());
+        }
+    }
+    maybe_persist_boot_id(ctx_, st.boot_id);
     ctx_->status_cache->setAgentStatus(st);
     ctx_->status_cache->onAgentChanged();
     // Heartbeats are liveness-only (spec 6.2): they refresh the cache but
@@ -289,6 +340,7 @@ void AgentLink::teardownSession(mcco::AgentSession* mine, const char* event, uin
     mcco::AgentStatus st = ctx_->status_cache->snapshotAgent();
     st.session_live = false;
     st.last_frame_at = last_frame_at;
+    st.declared_offline_until = 0; // the declaration is hello-scoped (7.2.2)
     ctx_->status_cache->setAgentStatus(st);
     ctx_->status_cache->onAgentChanged();
 
@@ -307,7 +359,7 @@ void AgentLink::teardownSession(mcco::AgentSession* mine, const char* event, uin
     delete mine;
 }
 
-void AgentLink::requestClose(uint16_t close_code) {
+void AgentLink::requestClose(uint16_t close_code, bool offline_effect) {
     mcco::AgentSession* dead = nullptr;
     {
         Guard g(state_mutex_);
@@ -321,6 +373,7 @@ void AgentLink::requestClose(uint16_t close_code) {
             active_atomic_ = false;
         } else {
             pending_close_ = close_code; // WS loop delivers the close frame
+            pending_close_offline_effect_ = offline_effect;
             return;
         }
     }
@@ -438,6 +491,17 @@ void AgentLink::runWsSession(WsOffer offer, uint8_t* buf) {
         }
     }
     applyHello(ev);
+    {
+        // Spec 8.2.2: remember the agent's source IP for the shutdown
+        // probes; refreshed on every new session, kept otherwise.
+        mcco::AgentStatus st = ctx_->status_cache->snapshotAgent();
+        const std::string ip = client.remoteIP().toString().c_str();
+        if (st.peer_ip != ip) {
+            st.peer_ip = ip;
+            ctx_->status_cache->setAgentStatus(st);
+            ctx_->status_cache->onAgentChanged();
+        }
+    }
     // Session loop: 1 s frame deadline so outbound dispatches and liveness
     // are serviced every iteration.
 
@@ -445,11 +509,14 @@ void AgentLink::runWsSession(WsOffer offer, uint8_t* buf) {
         esp_task_wdt_reset();
 
         uint16_t close_req = 0;
+        bool close_offline_effect = true;
         bool current;
         {
             Guard g(state_mutex_);
             close_req = pending_close_;
             pending_close_ = 0;
+            close_offline_effect = pending_close_offline_effect_;
+            pending_close_offline_effect_ = true;
             current = (session_ == mine);
         }
         if (close_req != 0) {
@@ -457,9 +524,12 @@ void AgentLink::runWsSession(WsOffer offer, uint8_t* buf) {
             ws::send_close(client, close_req, nullptr);
             // Revocation (4001) is administrative: confirming records are left
             // to the deadline sweep; a supersede closes like a normal end.
+            // The offline_effect flag comes from the requester (false for the
+            // spec 8.1.2 wake close: the record has no window and absence
+            // runs to timed_out, not evidence_lost).
             const bool revoked = close_req == (uint16_t)mcco::AgentClose::Unpaired;
             teardownSession(mine, revoked ? "agent_revoked" : "agent_superseded", close_req,
-                            !revoked);
+                            close_offline_effect && !revoked);
             return;
         }
         {
@@ -687,8 +757,8 @@ void AgentLink::tick() {
 }
 
 bool AgentLink::pollEvent(const std::string& auth_bearer, const std::string& session_hdr,
-                          const std::string& body, std::string& response_json,
-                          mcco::ErrCode& err) {
+                          const std::string& body, const std::string& peer_ip,
+                          std::string& response_json, mcco::ErrCode& err) {
     if (auth_bearer.empty() || !ctx_->pairing) {
         err = mcco::ErrCode::Unauthorized;
         return false;
@@ -750,6 +820,16 @@ bool AgentLink::pollEvent(const std::string& auth_bearer, const std::string& ses
             return false;
         }
         applyHello(ev);
+        {
+            // Spec 8.2.2: the polling transport's source IP feeds the
+            // shutdown probes; refreshed on every polling hello.
+            mcco::AgentStatus st = ctx_->status_cache->snapshotAgent();
+            if (st.peer_ip != peer_ip) {
+                st.peer_ip = peer_ip;
+                ctx_->status_cache->setAgentStatus(st);
+                ctx_->status_cache->onAgentChanged();
+            }
+        }
         std::string sid;
         uint32_t hb_s, stale_s, offline_s;
         {

@@ -9,6 +9,7 @@
 #include "mc_log.h"
 #include "mc_types.h"
 #include "macro_runner.h"
+#include "power_probe.h"
 
 namespace {
 struct DispatchItem {
@@ -64,6 +65,11 @@ void CommandDispatcher::taskEntry(void* arg) {
         {
             Guard g(ctx->engine_mutex);
             ctx->engine->sweep_deadlines();
+            // Spec 5.3.2 expected-offline windows: sleep completes at close,
+            // silence onsets the offline notification missed become
+            // backstop offline evidence. The channel verdict is the lock-free
+            // session liveness (agent gate discipline, agent_link.h).
+            ctx->engine->sweep_windows(ctx->agent_link && !ctx->agent_link->sessionActive());
         }
         // Agent OFFLINE transitions are deferred here (never in the timer
         // task): confirming records without a window -> unconfirmed (5.2.1).
@@ -71,6 +77,9 @@ void CommandDispatcher::taskEntry(void* arg) {
             Guard g(ctx->engine_mutex);
             ctx->engine->on_agent_offline();
         }
+        // Spec 8.2.2 shutdown corroboration: non-blocking ICMP probe state
+        // machine (no task of its own; the 1 s cadence lives here).
+        power_probe_tick(ctx);
         if (!got) continue;
 
         // OOM firewall: engine/ledger/std::string work below can throw
@@ -129,6 +138,14 @@ void CommandDispatcher::taskEntry(void* arg) {
             continue;
         }
 
+        if (type == mcco::CommandType::Wake && ctx->agent_link) {
+            // Spec 8.1.2: when the Mac is already awake, closing the
+            // incumbent session with 1000 forces a fresh hello + initial
+            // burst — the wake predicate's evidence. offline_effect=false:
+            // the wake record has no offline window, so the deliberate
+            // absence must run to timed_out, never unconfirmed/evidence_lost.
+            ctx->agent_link->requestClose(1000, /*offline_effect=*/false);
+        }
         const bool ok = ctx->hid->send_chord(type);
         {
             Guard g(ctx->engine_mutex);

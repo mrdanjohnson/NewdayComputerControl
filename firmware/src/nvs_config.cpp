@@ -370,6 +370,23 @@ bool ConfigStore::persistPairing(const mcco::PairingStore& ps) {
     return writeRecord("pairing", ps.dump());
 }
 
+bool ConfigStore::persistAgentBootId(const std::string& boot_id) {
+    JsonDocument doc;
+    doc["boot_id"] = boot_id;
+    std::string out;
+    serializeJson(doc, out);
+    return writeRecord("aboot", out);
+}
+
+bool ConfigStore::loadAgentBootId(std::string& boot_id) {
+    std::string tmp;
+    if (!readRecord("aboot", tmp)) return false; // no record yet
+    JsonDocument doc;
+    if (deserializeJson(doc, tmp) || !doc.is<JsonObject>()) return false;
+    boot_id = doc["boot_id"] | "";
+    return !boot_id.empty();
+}
+
 bool ConfigStore::hydratePairing(mcco::PairingStore& ps) {
     std::string tmp;
     if (!readRecord("pairing", tmp)) return false; // no persisted pairing yet

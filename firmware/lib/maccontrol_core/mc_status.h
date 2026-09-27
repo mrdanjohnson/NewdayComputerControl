@@ -68,6 +68,13 @@ struct AgentStatus {
     std::string front_app;           // empty = none -> rendered null
     uint32_t stale_threshold_s = 15;    // spec 4.2.2 defaults (3x/6x of 5 s)
     uint32_t offline_threshold_s = 30;
+    // Phase 5 (spec 5.3.2/7.2.2): an agent_goodbye(reason=sleep|restart|
+    // shutdown) opens a declared expected-offline window; epoch seconds,
+    // 0 = no declaration. Overrides stale aging while in the future.
+    uint64_t declared_offline_until = 0;
+    // Last-known agent peer IP (the transport source of the current/recent
+    // session), "" = unknown -> the §8.2.2 shutdown probes cannot run.
+    std::string peer_ip;
 };
 
 // Hostname rule from spec 3.1.1: 1-57 chars, lowercase [a-z0-9-], start/end

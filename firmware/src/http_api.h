@@ -7,8 +7,9 @@
 #include "app_context.h"
 
 // Synchronous HTTP/1.1 server on WiFiServer port 80: Connection: close, one
-// request at a time, served from its own FreeRTOS task (12 KB stack). The
-// closed controller surface of spec 12.1.1 / 13.3 (power commands + macros/
+// request at a time, served from its own FreeRTOS task (28 KB stack; HWM
+// measured 21 KB under AT load, ~7 KB headroom — Phase 5 trim from 40 KB).
+// The closed controller surface of spec 12.1.1 / 13.3 (power commands + macros/
 // triggers/identity + Phase 4 pairing administration) is implemented here;
 // everything else — including /api/v1/exec, /api/v1/ota*, unversioned paths —
 // is 404 not_found. The /agent/v1/* surface (spec 4.2/4.3) authenticates with

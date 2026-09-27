@@ -46,9 +46,11 @@ public:
     // the handshake bytes as a frame.
     bool canAcceptWs() const;
     // HTTP task: POST /agent/v1/events (spec 4.3.1). Caller does not hold
-    // engine_mutex; this takes it internally where needed.
+    // engine_mutex; this takes it internally where needed. `peer_ip` is the
+    // HTTP client's address (spec 8.2.2: last-known source IP for probes).
     bool pollEvent(const std::string& auth_bearer, const std::string& session_hdr,
-                   const std::string& body, std::string& response_json, mcco::ErrCode& err);
+                   const std::string& body, const std::string& peer_ip,
+                   std::string& response_json, mcco::ErrCode& err);
 
     // HTTP task: GET /agent/v1/commands/pending.
     bool pollPending(const std::string& auth_bearer, const std::string& session_hdr,
@@ -73,7 +75,12 @@ public:
 
     // ADMIN revocation (spec 3.2.2): terminate the live session immediately
     // with the given WS close code. Safe from any task context.
-    void requestClose(uint16_t close_code);
+    // `offline_effect` selects whether the teardown runs engine
+    // on_agent_offline() (channel lost): true for revocations and supersede
+    // handoffs, FALSE for the spec 8.1.2 wake close — the wake record has no
+    // offline window, so the forced absence must run to timed_out, never
+    // unconfirmed/evidence_lost.
+    void requestClose(uint16_t close_code, bool offline_effect = true);
 
 private:
     struct WsOffer {
@@ -124,6 +131,7 @@ private:
     bool socket_dead_ = false; // no reader left: the timer reclaims at OFFLINE
     mcco::AgentConnState last_conn_state_ = mcco::AgentConnState::AwaitingHello;
     uint16_t pending_close_ = 0; // WS close to deliver to the live session
+    bool pending_close_offline_effect_ = true; // engine offline sweep on close
 
     std::atomic<bool> active_atomic_{false};
     std::atomic<bool> offline_pending_{false};

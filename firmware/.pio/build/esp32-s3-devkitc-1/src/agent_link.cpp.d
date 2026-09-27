@@ -196,5 +196,7 @@
  src/esp_clock.h src/esp_rng.h src/log_sink.h \
  lib/maccontrol_core/mc_log.h lib/maccontrol_core/mc_engine.h \
  lib/maccontrol_core/mc_ids.h lib/maccontrol_core/mc_ledger.h \
- lib/maccontrol_core/mc_pairing.h src/status_cache.h src/usb_link.h \
+ lib/maccontrol_core/mc_pairing.h src/nvs_config.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
+ lib/maccontrol_core/mc_auth.h src/status_cache.h src/usb_link.h \
  src/ws_server.h

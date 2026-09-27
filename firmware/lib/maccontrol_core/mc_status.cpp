@@ -55,6 +55,10 @@ static bool agent_connected(const AgentStatus* a, uint64_t now) {
 
 static Freshness agent_freshness(const AgentStatus* a, uint64_t at, uint64_t now) {
     if (!a || at == 0) return Freshness::Unknown;
+    // Spec 7.2.2: an open declared expected-offline window freezes the
+    // agent-reported groups at expected_offline — positive evidence, not the
+    // ambiguous `stale` — until it expires, then normal aging resumes.
+    if (a->declared_offline_until > now) return Freshness::ExpectedOffline;
     // Spec 4.2.2: agent-reported tuples go STALE after stale_threshold_s of
     // AGENT SILENCE, not after the last state change — heartbeats keep them
     // fresh while the session lives (observed_at stays the value's true
@@ -85,9 +89,19 @@ void build_status(JsonDocument& doc, const Identity& id, bool usb_up,
                Freshness::Fresh);
 
     const bool connected = agent_connected(agent, now);
-    // connection.agent is esp32_direct event-driven: the value flips at the
-    // OFFLINE observation itself (spec 7.2.2 worked example 2), never ages.
-    tuple_bool(conn, "agent", connected, Source::Esp32Direct, now, -1, Freshness::Fresh);
+    // Spec 7.2.2 table: during a declared window connection.agent is SET
+    // false with expected_offline freshness (the endpoint directly observed
+    // the agent leave); the onset is the declaring goodbye (~60 s before the
+    // stored expiry).
+    const bool declared = agent && agent->declared_offline_until > now;
+    if (declared) {
+        tuple_bool(conn, "agent", false, Source::Esp32Direct,
+                   agent->declared_offline_until - 60, -1, Freshness::ExpectedOffline);
+    } else {
+        // connection.agent is esp32_direct event-driven: the value flips at the
+        // OFFLINE observation itself (spec 7.2.2 worked example 2), never ages.
+        tuple_bool(conn, "agent", connected, Source::Esp32Direct, now, -1, Freshness::Fresh);
+    }
 
     JsonObject mac = doc["mac"].to<JsonObject>();
     if (!agent || !agent->paired || !agent->has_system) tuple_null(mac, "state");
@@ -120,7 +134,9 @@ void build_status(JsonDocument& doc, const Identity& id, bool usb_up,
     }
     if (!agent || !agent->paired || !agent->has_boot) tuple_null(mac, "boot_id");
     else tuple_str(mac, "boot_id", agent->boot_id.c_str(), Source::AgentReported,
-                   agent->boot_at, -1, Freshness::Fresh); // retained, never ages (7.2.2)
+                   agent->boot_at, -1,
+                   declared ? Freshness::ExpectedOffline
+                            : Freshness::Fresh); // retained through the window (7.2.2)
 
     JsonObject apps = doc["applications"].to<JsonObject>();
     if (agent && agent->paired) {
@@ -215,22 +231,28 @@ void build_capabilities(JsonDocument& doc, const Identity& id,
     const bool connected = agent_connected(agent, now);
     doc["api_version"] = "v1";
     doc["mode"] = paired ? "B" : "A";
-    doc["capability_level"] = paired ? "L2" : "L1"; // L3 arrives with Phase 5
+    // PRD §1.3.3 capability levels: L1 = Mode A HID control; L2 = Mode B
+    // agent visibility (paired); L3 = Mode B verified automation, claimed
+    // only while the evidence channel is live (paired && connected, which
+    // also satisfies the §17.1.1 verified:true => paired+connected rule).
+    doc["capability_level"] = !paired ? "L1" : (connected ? "L3" : "L2");
     JsonObject device = doc["device"].to<JsonObject>();
     device["name"] = id.device_name.c_str();
     device["hostname"] = id.hostname.c_str();
 
     JsonObject cmds = doc["commands"].to<JsonObject>();
-    // Power/lock/macro commands stay verified:false until the Phase 5
-    // verification predicates ship; they remain dispatchable (available).
-    cmd_entry(cmds, "wake", true, false, 120);
-    cmd_entry(cmds, "sleep", true, false, 90);
-    cmd_entry(cmds, "restart", true, false, 180);
-    cmd_entry(cmds, "shutdown", true, false, 120);
-    cmd_entry(cmds, "lock", true, false, 15);
+    // Phase 5 (spec 5.3.1/§8): power/lock/macro commands are verifiable in
+    // Mode B exactly while the agent channel is live; they remain dispatchable
+    // (available) regardless.
+    const bool power_verified = paired && connected;
+    cmd_entry(cmds, "wake", true, power_verified, 120);
+    cmd_entry(cmds, "sleep", true, power_verified, 90);
+    cmd_entry(cmds, "restart", true, power_verified, 180);
+    cmd_entry(cmds, "shutdown", true, power_verified, 120);
+    cmd_entry(cmds, "lock", true, power_verified, 15);
     JsonObject macro = cmds["macro_execute"].to<JsonObject>();
     macro["available"] = true;
-    macro["verified"] = false;
+    macro["verified"] = power_verified;
     JsonArray ids = macro["macro_ids"].to<JsonArray>();
     for (const auto& mid : macro_ids) ids.add(mid);
     // app_launch/app_quit: dispatchable (and verifiable) only with a live

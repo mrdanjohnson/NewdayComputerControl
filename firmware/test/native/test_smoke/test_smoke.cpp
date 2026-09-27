@@ -155,6 +155,55 @@ TEST(Smoke, StatusModeBProvenanceAndFreshness) {
     EXPECT_FALSE(doc["connection"]["agent"]["value"].as<bool>());
 }
 
+TEST(Smoke, StatusDeclaredOfflineWindow) {
+    // Phase 5 (spec 7.2.2 worked example 3): a declared sleep/restart/
+    // shutdown goodbye opens an expected-offline window — agent-derived
+    // fields render expected_offline (not stale), connection.agent is SET
+    // false with expected_offline freshness; after expiry normal aging
+    // resumes. connection.network is untouched by the window.
+    mcco::Identity id{"ProPresenter Mac", "mac-a1b2c3", "", "", "a1b2c3d4e5f6"};
+    mcco::AgentStatus agent;
+    agent.paired = true;
+    agent.session_live = true;
+    agent.last_frame_at = 1736848804;
+    agent.has_system = true;
+    agent.system_state = "awake";
+    agent.system_at = 1736848804;
+    agent.has_boot = true;
+    agent.boot_id = "b_3F8A11";
+    agent.boot_at = 1736848700;
+    agent.apps["com.x"] = {true, 812, 1736848804};
+
+    // Goodbye at t=4 opens the window until t=64.
+    agent.declared_offline_until = 1736848864;
+    agent.session_live = false;
+    JsonDocument doc;
+    mcco::build_status(doc, id, true, true, 1736848800, 1736848800, &agent,
+                       1736848830, 11);
+    // 26 s of silence: WITHOUT the window this would be stale; the window
+    // freezes the agent-reported groups at expected_offline, values kept.
+    EXPECT_EQ(std::string(doc["mac"]["state"]["freshness"] | "?"), "expected_offline");
+    EXPECT_EQ(std::string(doc["mac"]["state"]["value"] | "?"), "awake");
+    EXPECT_EQ(std::string(doc["applications"]["com.x"]["state"]["freshness"] | "?"),
+              "expected_offline");
+    // boot_id is retained through the window with expected_offline freshness.
+    EXPECT_EQ(std::string(doc["mac"]["boot_id"]["value"] | "?"), "b_3F8A11");
+    EXPECT_EQ(std::string(doc["mac"]["boot_id"]["freshness"] | "?"), "expected_offline");
+    // connection.agent is SET false with expected_offline freshness.
+    EXPECT_FALSE(doc["connection"]["agent"]["value"].as<bool>());
+    EXPECT_EQ(std::string(doc["connection"]["agent"]["freshness"] | "?"), "expected_offline");
+    // connection.network is a network_probe tuple: untouched by the window.
+    EXPECT_TRUE(doc["connection"]["network"]["value"].as<bool>());
+    EXPECT_EQ(std::string(doc["connection"]["network"]["freshness"] | "?"), "fresh");
+
+    // After expiry (t=70): normal stale aging resumes.
+    mcco::build_status(doc, id, true, true, 1736848800, 1736848800, &agent,
+                       1736848870, 12);
+    EXPECT_EQ(std::string(doc["mac"]["state"]["freshness"] | "?"), "stale");
+    EXPECT_EQ(std::string(doc["mac"]["boot_id"]["freshness"] | "?"), "fresh");
+    EXPECT_FALSE(doc["connection"]["agent"]["value"].as<bool>());
+}
+
 TEST(Smoke, AgentSystemInfoRendering) {
     mcco::AgentStatus st;
     JsonDocument doc;
@@ -242,20 +291,27 @@ TEST(Smoke, CapabilitiesModeBHonesty) {
     JsonDocument doc;
     mcco::build_capabilities(doc, id, {"mac_01"}, &agent, 1736848812);
     EXPECT_EQ(std::string(doc["mode"] | "?"), "B");
-    EXPECT_EQ(std::string(doc["capability_level"] | "?"), "L2");
+    // Phase 5 (PRD §1.3.3): paired + connected is L3 — verified automation.
+    EXPECT_EQ(std::string(doc["capability_level"] | "?"), "L3");
     EXPECT_TRUE(doc["agent"]["paired"].as<bool>());
     EXPECT_TRUE(doc["agent"]["connected"].as<bool>());
     EXPECT_TRUE(doc["commands"]["app_launch"]["available"].as<bool>());
     EXPECT_TRUE(doc["commands"]["app_launch"]["verified"].as<bool>());
     EXPECT_EQ(doc["commands"]["app_launch"]["apps"].as<JsonArrayConst>().size(), 1);
-    // Power/lock predicates are Phase 5: still unverified in Mode B.
-    EXPECT_FALSE(doc["commands"]["lock"]["verified"].as<bool>());
-    EXPECT_FALSE(doc["commands"]["restart"]["verified"].as<bool>());
+    // Phase 5 (spec 5.3.1/§8): power/lock/macro verified exactly while the
+    // agent channel is live; they remain dispatchable regardless.
+    EXPECT_TRUE(doc["commands"]["lock"]["verified"].as<bool>());
+    EXPECT_TRUE(doc["commands"]["restart"]["verified"].as<bool>());
+    EXPECT_TRUE(doc["commands"]["wake"]["verified"].as<bool>());
+    EXPECT_TRUE(doc["commands"]["sleep"]["verified"].as<bool>());
+    EXPECT_TRUE(doc["commands"]["shutdown"]["verified"].as<bool>());
+    EXPECT_TRUE(doc["commands"]["macro_execute"]["verified"].as<bool>());
 
     // 31 s later (offline): connected collapses, verified collapses with it
-    // (spec 17.1.1 schema constraints).
+    // (spec 17.1.1 schema constraints); level degrades B-side to L2.
     mcco::build_capabilities(doc, id, {"mac_01"}, &agent, 1736848841);
     EXPECT_FALSE(doc["agent"]["connected"].as<bool>());
+    EXPECT_EQ(std::string(doc["capability_level"] | "?"), "L2");
     for (JsonPair kv : doc["commands"].as<JsonObject>()) {
         EXPECT_FALSE(kv.value()["verified"].as<bool>()) << kv.key().c_str();
     }
