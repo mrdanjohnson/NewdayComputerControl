@@ -39,7 +39,7 @@ mDNS (`_maccontrol._tcp`, TXT `mode=A|B`, `pair=active|inactive`), serves:
 
 Architecture: `lib/maccontrol_core/` is pure C++17 spec logic (engine,
 ledger, RBAC, pairing, agent session, status builders) that also compiles
-on the host for the 114-case native test suite; `src/` is the Arduino
+on the host for the 144-case native test suite; `src/` is the Arduino
 glue (HTTP server on its own task, RFC 6455 WebSocket server, agent link
 + liveness timer, command dispatcher, NVS/LittleFS persistence, USB HID).
 The HTTP server is single-threaded with keep-alive + backlog preemption;
@@ -111,16 +111,146 @@ is never logged.
    leaves go `stale` on agent silence; `connection.agent` flips false at
    the offline threshold.
 
+## Installing (end-user guide)
+
+This is the full setup for one **controlled Mac**: flash the ESP32, put it on
+Wi-Fi, create API keys, pair the agent — one installer command. Repeat the
+whole procedure per Mac you want to control (one ESP32 each).
+
+### What you need
+
+- An **ESP32-S3-DevKitC-1** (N8) per controlled Mac, with **two USB cables**.
+- The **Mac to be controlled**, with admin access (the agent runs as the
+  logged-in user; screen-lock/sleep detection needs it).
+- A **Wi-Fi network** both the ESP32 and any controlling machines share.
+- **macOS 13+** with `python3` (install Xcode Command Line Tools with
+  `xcode-select --install` if `python3 --version` fails).
+- The **WCH CH34x USB-serial driver** on the Mac you flash from. Install it
+  from wch.cn (CH34XSER) before the first flash; without it the flash cable
+  doesn't appear as `/dev/cu.usbmodem…`.
+
+### Wiring
+
+The S3 devkit has **two USB ports with different jobs** — the only trap that
+matters at install time:
+
+- **"USB" port (USB-OTG, usually labeled USB on the silk)** → plug into the
+  **Mac being controlled**. The ESP32 is a USB keyboard to that Mac; all
+  keystrokes, lock/wake/sleep chords go to *that* Mac, no matter who sends
+  the command.
+- **"com"/UART port (CH343 bridge)** → the Mac you run the installer on
+  (can be the controlled Mac itself). Flashing and provisioning only.
+
+Both ports feed the board's 5 V — **one powered cable is enough**; pulling
+the cable that powers it reboots the board.
+
+### One-shot install
+
+```bash
+git clone <this repo> && cd "<repo>/agent"
+./install.sh --flash --provision \
+    --allow com.apple.Terminal com.apple.Safari \
+    --enable-launch --enable-quit
+```
+
+The installer will:
+
+1. Create `agent/.venv` and install dependencies (recovering automatically
+   if a `.venv` was copied from another machine — those die on a new host).
+2. **Flash** the committed firmware bundle `firmware/dist/esp32-s3/`
+   (bootloader, partition table, app) to the ESP32 over the UART port. If
+   several serial devices are present it asks which one.
+3. **Prompt** for the Wi-Fi SSID/password and a 10+ character **admin
+   password** (typed blind; also passable as `--wifi-ssid … --wifi-pass …
+   --admin-password …` for unattended installs).
+4. Over the serial console: save Wi-Fi, create **READ / CONTROL / ADMIN API
+   keys**, set the admin password.
+5. Wait for the device on the network, log into its Web UI, open the
+   pairing window, and **pair this Mac's agent** automatically.
+6. Write `~/.maccontrol/endpoint.keys` (chmod 600) and print the three
+   keys **once** — store them; they are never shown again.
+7. Install the LaunchAgent so the agent runs at login and self-restarts.
+
+Each phase is independently re-runnable; a failure says what to fix.
+Re-provisioning a used device **adds** keys (8-key cap) — revoke old ones
+from the Web UI Security tab or the serial console (`key revoke <id>`), or
+pass `--no-keys`. Re-pairing over an existing pairing needs `--re-pair`;
+removing everything agent-side is `./install.sh --uninstall`.
+
+### After the install
+
+```bash
+launchctl list | grep com.maccontrol.agent          # agent running?
+cat ~/.maccontrol/endpoint.keys                     # hostname + your 3 keys
+open "http://$(grep ENDPOINT_HOSTNAME ~/.maccontrol/endpoint.keys | cut -d= -f2).local/"
+```
+
+The Web UI (log in with the admin password) has the dashboard, macros,
+triggers, Security (key minting/revoke), Logs, and Pairing tabs. API checks:
+
+```bash
+source ~/.maccontrol/endpoint.keys
+curl -s -H "Authorization: Bearer $READ_KEY" "http://$ENDPOINT_HOSTNAME.local/api/v1/status" | head
+curl -s -H "Authorization: Bearer $READ_KEY" "http://$ENDPOINT_HOSTNAME.local/api/v1/agent/status"
+```
+
+### Everyday control
+
+```bash
+H="http://$ENDPOINT_HOSTNAME.local"
+# Lock the controlled Mac's screen (verified via the agent's lock detection):
+curl -s -X POST -H "Authorization: Bearer $CONTROL_KEY" $H/api/v1/system/lock
+# Sleep it (completes honestly when the host stays offline through the window):
+curl -s -X POST -H "Authorization: Bearer $CONTROL_KEY" $H/api/v1/system/sleep
+# Wake it (HID key-tap to the sleeping Mac):
+curl -s -X POST -H "Authorization: Bearer $CONTROL_KEY" $H/api/v1/system/wake
+# Launch an allowlisted app on the controlled Mac:
+curl -s -X POST -H "Authorization: Bearer $CONTROL_KEY" $H/api/v1/apps/com.apple.Terminal/launch
+```
+
+Each command returns `202` with a `command_id`; follow it with
+`GET /api/v1/commands/<command_id>` (READ key). Poll no faster than every
+2–3 s (the READ bucket is 60 req/min). **`restart` and `shutdown` are real
+— they interrupt whoever is at that Mac; use deliberately.** Full command
+reference: `GET /api/v1/openapi.json`, and the operator's guide in
+`.kimi-code/skills/maccontrol/SKILL.md`.
+
+### Updating the firmware later
+
+```bash
+cd "<repo>/firmware"
+./.venv/bin/pio run -e esp32-s3-devkitc-1           # build (or use your own pio)
+cp .pio/build/esp32-s3-devkitc-1/{bootloader,partitions,firmware}.bin \
+   ../firmware/dist/esp32-s3/                        # refresh the bundle
+cd ../agent && ./install.sh --flash                 # reflash; NVS/keys/pairing survive
+```
+
+A plain reflash never touches Wi-Fi, keys, pairing, or the ledger.
+
+### If something goes wrong
+
+| Symptom | First thing to check |
+|---|---|
+| No `/dev/cu.usbmodem…` appears | CH34x driver not installed, or the wrong USB port (use the UART/"com" port, not the HID one) |
+| Flash can't connect | Another program holds the port (a monitor/IDE); the board reboots on every serial open — that's normal, retry |
+| Agent log shows `hello_ack timeout` forever | The agent can't reach the endpoint: wrong/stale hostname in `~/.maccontrol/agent.json` (the device may have been renamed — `GET /api/v1/status → device.hostname` is ground truth), or the Mac changed Wi-Fi networks |
+| `401 unauthorized` | Key wrong or revoked; recreate in the Web UI Security tab |
+| Locked out after retries | 10 failed auths from one IP locks it out for 60 s — wait, then use a valid key |
+| Forgot the admin password | Serial console (`screen /dev/cu.usbmodem… 115200`): `admin set <new>` |
+
+```
+MacControl_Deterministic_Architecture_Spec.md   the PRD (normative)
 ## Repository layout
 
 ```
 MacControl_Deterministic_Architecture_Spec.md   the PRD (normative)
 firmware/          ESP32 firmware (PlatformIO) + docs/ + scripts/ + test/native/
-  docs/PHASE1.md — PHASE4.5.md     per-phase build/verify logs; PHASE4.5 is the
-    current next step (MCA telemetry completion), PHASE5/6 pending (read
-    HANDOFF.md first)
+  docs/PHASE1.md — PHASE5.md     per-phase build/verify logs (PHASE5 is the
+    current state; read HANDOFF.md first)
   docs/HANDOFF.md          resume document — status, landmines, conventions
-  docs/DEBUG-PHASE4-AT11.md  the radio-death root-cause analysis
+  docs/DEBUG-*.md          post-mortems: radio death (PHASE4), stale mDNS
+    hostname after device rename, USB link detection
+  dist/esp32-s3/           committed flash bundle used by agent/install.sh
   scripts/at01_at02.py … at11.py   acceptance test runners
 agent/             MacControlAgent (Python) — see agent/README.md
 docx/              spec working documents
@@ -149,7 +279,7 @@ cd ../agent && python3 -m venv .venv && .venv/bin/pip install -r requirements.tx
 
 ## Testing
 
-- `./.venv/bin/pio test -e native` — 114 host-side tests over
+- `./.venv/bin/pio test -e native` — 144 host-side tests over
   `lib/maccontrol_core` (ledger, engine, RBAC, pairing, agent session,
   status builders). Run before every flash.
 - `pio run -e esp32-s3-devkitc-1` and `-e esp32-wroom-32` must both stay

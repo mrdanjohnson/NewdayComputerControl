@@ -152,26 +152,32 @@ class PollingTransport:
             session_id, rt.state.poll_interval_s))
         interval = max(2.0, min(30.0, float(rt.state.poll_interval_s)))
         next_poll = 0.0
-        while not rt.stop_event.is_set():
-            now = time.monotonic()
-            try:
-                if now >= next_poll:
-                    await self._drain_outbox(session_id)
-                    rt.telemetry.emit_heartbeat_if_due()
-                    await self._drain_outbox(session_id)
-                    await self._poll_pending(session_id)
-                    next_poll = time.monotonic() + interval
-                else:
-                    await self._drain_outbox(session_id)
-            except PollFailure as pf:
-                raise pf
-            except (OSError, asyncio.TimeoutError) as exc:
-                raise PollFailure("retry", "poll cycle network error: %s" % exc)
-            try:
-                await asyncio.wait_for(rt.stop_event.wait(),
-                                       timeout=max(0.1, next_poll - time.monotonic()))
-            except asyncio.TimeoutError:
-                pass
+        # Synchronous event-POST drain: when it returns, every frame enqueued
+        # so far is transmitted (actions._power awaits this before acting).
+        rt.flush_now = lambda: self._drain_outbox(session_id)
+        try:
+            while not rt.stop_event.is_set():
+                now = time.monotonic()
+                try:
+                    if now >= next_poll:
+                        await self._drain_outbox(session_id)
+                        rt.telemetry.emit_heartbeat_if_due()
+                        await self._drain_outbox(session_id)
+                        await self._poll_pending(session_id)
+                        next_poll = time.monotonic() + interval
+                    else:
+                        await self._drain_outbox(session_id)
+                except PollFailure as pf:
+                    raise pf
+                except (OSError, asyncio.TimeoutError) as exc:
+                    raise PollFailure("retry", "poll cycle network error: %s" % exc)
+                try:
+                    await asyncio.wait_for(rt.stop_event.wait(),
+                                           timeout=max(0.1, next_poll - time.monotonic()))
+                except asyncio.TimeoutError:
+                    pass
+        finally:
+            rt.flush_now = None
         # graceful stop: flush anything left (e.g. agent_goodbye)
         try:
             while not rt.outbox.empty():

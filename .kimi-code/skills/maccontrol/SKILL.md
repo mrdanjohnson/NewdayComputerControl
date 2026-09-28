@@ -24,8 +24,12 @@ The endpoint advertises `_maccontrol._tcp` over mDNS as `<hostname>.local`
 - Fallback if mDNS fails: ask the operator for the IP, or browse:
   `dns-sd -B _maccontrol._tcp local`
 
-Use `$MACCONTROL_HOST` below for the base (default `http://mac-b53478.local`,
-current lab unit: also reachable at `http://10.10.40.242`).
+Use `$MACCONTROL_HOST` below for the base. **Current lab unit (renamed
+2026-09): `http://control-graphics.local` (also `http://10.10.40.242`).**
+The old name `mac-b53478.local` is a stale mDNS cache entry that macOS
+intermittently resolves to a dead/wrong IP — do not use it; check
+`/api/v1/status → device.hostname` for ground truth if a name stops
+resolving (see firmware/docs/DEBUG-MDNS-STALE-NAME.md).
 
 ## 2. Authentication
 
@@ -66,10 +70,13 @@ curl -s -H "Authorization: Bearer $KEY" $MACCONTROL_HOST/api/v1/capabilities
   `available: false` (calling them → 409 `agent_not_paired`, no record
   created). Drive all behavior from this document; never act on endpoints it
   doesn't list. Full contract: `GET /api/v1/openapi.json`.
-- **Mode B** (agent paired): `capability_level: "L2"`; `app_launch`/
-  `app_quit` report `available: true` and become `verified: true` while an
-  agent session is live. Power/lock/macro verification predicates remain
-  unimplemented — those still terminate `unconfirmed`/`hid_only`.
+- **Mode B** (agent paired): `capability_level: "L2"` while paired, **"L3"
+  while an agent session is live** (verified automation, Phase 5).
+  `app_launch`/`app_quit` report `available: true` and `verified: true` with
+  a live session. Power/lock/macro commands are dispatchable and — with a
+  live session — verifiable: their `verified` flags track the connection and
+  their records can terminate honestly `completed` (see §5). Everything
+  collapses back to L2/all-false within the 30 s offline threshold.
 
 ## 4. Macros (the main actuation surface)
 
@@ -99,6 +106,13 @@ error. `completed` is impossible in Mode A and would indicate a bug. Terminal
 failures to expect honestly: `dispatch_error`/`usb_disconnected` (HID link
 down), `macro_timeout`.
 
+**Mode B (Phase 5):** a macro defined with an `expected_event` (restricted to
+the five ambient event types — anything else is rejected at macro
+create/update) stays `confirming` after dispatch and terminates
+`completed`/`macro_confirmed` when the matching event arrives within the
+deadline (macro timeout + 5 s). A macro without `expected_event` still ends
+`unconfirmed`/`hid_only` even in Mode B — honest, not an error.
+
 ## 5. Power commands
 
 ```bash
@@ -118,6 +132,27 @@ sleep/restart/shutdown), other in-flight confirming records inherit that
 window — the offline sweep then classifies the loss `expected_offline` instead
 of `evidence_lost`. A `sleep` the agent *didn't* declare reads as an ordinary
 offline.
+
+Lifecycle notes (Phase 5+): with a live agent session these commands stay
+`confirming` after dispatch and terminate honestly —
+`lock` → `completed`/`lock_confirmed` on the agent's `screen_lock_changed`
+(15 s deadline);
+`sleep` → `sleep_confirmed` when the window closes with the host still
+offline;
+`restart` → `restart_confirmed` on a reconnect whose `boot_id` **changed**
+plus an awake burst (180 s deadline; an unchanged `boot_id` voids the
+evidence and the record ends `timed_out`);
+`shutdown` → `shutdown_confirmed` when the window closes, the host answers
+none of 3 ICMP probes, and it stays dark (120 s).
+Refuting evidence is honest too: reconnect before a sleep closes →
+`failed`/`unexpected_wake`; reconnect during a shutdown →
+`failed`/`unexpected_reconnect`; a shutdown host still answering probes →
+`failed`/`host_still_reachable`. In Mode B, submitting `lock`/`sleep`/
+`restart`/`shutdown` while no agent session is live → 409 `agent_offline`
+(no record created). `wake` is exempt — the Mac is asleep and the session is
+necessarily down at wake time — and completes only on a **post-dispatch new
+session** whose initial burst reports `awake`; a heartbeat alone never
+completes it.
 
 ## 6. App launch/quit (Mode B, via the paired agent)
 
@@ -198,7 +233,12 @@ table for consumers:
 
 The USB layer cannot distinguish sleep from power-off from unplug by
 construction — sleep-vs-restart comes from `boot_id`, commanded outages from
-the declared goodbye.
+the declared goodbye. During an open declared window, `/api/v1/status`
+agent-derived tuples (`mac.*`, `applications.*`) render
+`freshness: "expected_offline"` instead of going `stale`, and
+`connection.agent` reads `false` with `expected_offline` freshness; when the
+window closes without a reconnect, normal stale aging resumes (Phase 5, spec
+7.2.2).
 
 ## 9. Status and logs
 

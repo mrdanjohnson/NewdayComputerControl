@@ -57,6 +57,8 @@ public:
                      std::string& response_json, mcco::ErrCode& err);
 
     // Dispatcher task: queue one Mode B dispatch for the agent. False = full.
+    // `bundle_id` is empty for the power actions (sleep/restart/shutdown),
+    // which dispatch as {action, command_id} only (protocol v2).
     bool enqueueDispatch(const std::string& action, const std::string& bundle_id,
                          const std::string& command_id);
 

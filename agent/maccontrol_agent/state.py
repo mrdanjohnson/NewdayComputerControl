@@ -10,8 +10,14 @@ DEFAULT_STATE_PATH = os.path.join(DEFAULT_STATE_DIR, "agent.json")
 
 TRANSPORTS = ("websocket", "polling")
 
-# Fail-closed defaults: no app actions enabled until the operator enables them.
-DEFAULT_ENABLED_COMMANDS = {"launch_app": False, "quit_app": False}
+# Fail-closed defaults: no actions enabled until the operator enables them.
+DEFAULT_ENABLED_COMMANDS = {
+    "launch_app": False,
+    "quit_app": False,
+    "sleep": False,
+    "restart": False,
+    "shutdown": False,
+}
 
 SCHEMA_VERSION = 1
 

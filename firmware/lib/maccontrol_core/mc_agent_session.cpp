@@ -17,10 +17,12 @@ uint16_t AgentSession::acceptHello(const AgentEvent& ev) {
 
     JsonDocument p;
     if (deserializeJson(p, ev.payload_json)) return uint16_t(AgentClose::PolicyViolation);
-    // protocol_version negotiation: only version 1 exists (spec 4.2.1 table:
+    // protocol_version negotiation: only version 2 exists (spec 4.2.1 table:
     // unsupported version closes 4003, no reconnect until agent updated).
+    // v2 (agent-executed power actions) supersedes v1 entirely — a v1 agent
+    // must update before its hello is accepted.
     int proto = p["protocol_version"] | 0;
-    if (proto != 1) return uint16_t(AgentClose::ProtocolMismatch);
+    if (proto != 2) return uint16_t(AgentClose::ProtocolMismatch);
 
     session_id_ = make_session_id(rng_);
     hello_received_ = true;

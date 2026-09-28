@@ -13,8 +13,11 @@ public:
     //
     // IMPLEMENTATION DECISION (the spec fixes no chords): the wake chord is a
     // left-shift *tap* — a modifier press+release wakes a sleeping Mac without
-    // injecting a character. lock = Ctrl+Cmd+Q. sleep/restart/shutdown use the
-    // USB keyboard Power key (usage 0x66) with the noted modifiers.
+    // injecting a character. lock = Ctrl+Cmd+Q. restart/shutdown use the USB
+    // keyboard Power key (usage 0x66) with the noted modifiers. sleep is a HID
+    // System Control report (Generic Desktop page 0x01, Sleep usage 0x82) sent
+    // on a second device alongside the keyboard — the Cmd+Alt+Power chord it
+    // replaced only slept the displays, not the system.
     //
     // Returns false if USB is not mounted: polls re-enumeration every 1 s for
     // up to 5 s (spec 15.1), retries the dispatch once, and gives up on the

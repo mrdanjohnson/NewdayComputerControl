@@ -12,8 +12,8 @@ from collections import namedtuple
 from datetime import datetime, timezone
 
 MAX_EVENT_BYTES = 4096
-PROTOCOL_VERSION = 1
-AGENT_VERSION = "1.1.2"
+PROTOCOL_VERSION = 2
+AGENT_VERSION = "1.2.0"
 
 # Closed catalog of the twelve MCA event types (spec 6.2.1 + Phase 4.5
 # amendment: front_app_changed, foreground-app deltas only).
@@ -46,7 +46,11 @@ GOODBYE_REASONS = ("shutdown", "restart", "sleep", "user_logout", "agent_stop")
 SYSTEM_STATES = ("awake", "sleeping", "waking", "shutting_down", "restarting", "booting")
 APP_EXIT_REASONS = ("quit", "crashed", "requested_by_agent")
 
-AGENT_ACTIONS = ("launch_app", "quit_app")
+# Closed action set (spec 6.2.1, protocol v2): the two app actions plus the
+# three agent-executed power actions. Power actions dispatch as
+# {action, command_id} only — no bundle_id.
+AGENT_ACTIONS = ("launch_app", "quit_app", "sleep", "restart", "shutdown")
+POWER_ACTIONS = ("sleep", "restart", "shutdown")
 DISPATCH_KEYS = frozenset(("action", "bundle_id", "command_id"))
 BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9.\-]+$")
 
@@ -209,16 +213,25 @@ def parse_dispatch(obj) -> dict:
 def validate_dispatch_shape(dispatch: dict):
     """Returns (action, bundle_id) or raises ValueError with a human reason.
 
-    Enforces: exactly the three keys action/bundle_id/command_id, action in the
-    closed set {launch_app, quit_app}, bundle_id a well-formed string.
+    Enforces the closed envelope {action, bundle_id?, command_id}: action in
+    the closed set of five; bundle_id REQUIRED for launch_app/quit_app and
+    forbidden for the power actions (they carry {action, command_id} only).
+    Power actions return bundle_id=None.
     """
     keys = frozenset(dispatch.keys())
-    if keys != DISPATCH_KEYS:
+    if keys - DISPATCH_KEYS or not {"action", "command_id"} <= keys:
         raise ValueError("unexpected keys in dispatch: %r" % (sorted(keys),))
     action = dispatch["action"]
-    bundle_id = dispatch["bundle_id"]
     if action not in AGENT_ACTIONS:
         raise ValueError("unknown action: %r" % (action,))
+    if action in POWER_ACTIONS:
+        if keys != frozenset(("action", "command_id")):
+            raise ValueError("power actions carry {action, command_id} only: %r"
+                             % (sorted(keys),))
+        return action, None
+    if "bundle_id" not in keys:
+        raise ValueError("app action missing bundle_id: %r" % (sorted(keys),))
+    bundle_id = dispatch["bundle_id"]
     if not isinstance(bundle_id, str) or not BUNDLE_ID_RE.match(bundle_id):
         raise ValueError("invalid bundle_id: %r" % (bundle_id,))
     return action, bundle_id

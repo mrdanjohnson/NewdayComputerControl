@@ -46,4 +46,12 @@ struct AgentEvent {
 // is validated against the per-type table of spec 6.2.
 AgentEventError parse_agent_event(const std::string& json, AgentEvent& out);
 
+// Outbound dispatch (ESP32->MCA) shape, protocol v2 amendment: the envelope is
+// exactly {action, command_id} plus bundle_id ONLY for launch_app/quit_app —
+// the power actions sleep/restart/shutdown carry {action, command_id} only.
+// Closed discipline as with the event schema: unknown actions, unexpected
+// keys, a missing bundle_id on an app action, or any bundle_id on a power
+// action are SchemaViolation.
+AgentEventError validate_dispatch_json(const std::string& json);
+
 } // namespace mcco

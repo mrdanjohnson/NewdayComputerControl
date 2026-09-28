@@ -7,7 +7,7 @@ work. This file captures what changes day-to-day; keep it in sync.
 ## Commands
 
 ```bash
-./.venv/bin/pio test -e native                 # 120 host tests — run before EVERY flash
+./.venv/bin/pio test -e native                 # 144 host tests — run before EVERY flash
 ./.venv/bin/pio run -e esp32-s3-devkitc-1      # primary target (S3)
 ./.venv/bin/pio run -e esp32-wroom-32          # classic ESP32 (no USB HID)
 ./.venv/bin/pio run -e esp32-s3-devkitc-1 -t upload   # flash (uses UART port)
@@ -26,12 +26,15 @@ in `.venv` themselves. The Mac agent runs from `../agent` with its own venv
   agent surface), `agent_link.cpp` (WS task, polling ingress, liveness),
   `ws_server.cpp` (RFC 6455 codec), `command_dispatcher.cpp`,
   `mc_engine` wrapper in `main.cpp`, `nvs_config.cpp` (NVS + LittleFS),
-  `log_sink.*` (static 128-slot RAM ring), `status_cache.cpp`.
+  `log_sink.*` (static 128-slot RAM ring), `status_cache.cpp`,
+  `usb_link.*` (USB device-link sensor), `power_probe.*` (shutdown
+  ICMP-echo corroboration, driven from the dispatcher tick).
 - `test/native/` — host tests; extend when you change `lib/` behavior.
 - `scripts/` — acceptance runners (`at*.py`, `mc_http.py` keep-alive helper,
   `serial_cli.py`). Gates need **two consecutive green runs on one boot**.
-- `docs/` — PHASE1–4.5 logs, `HANDOFF.md`, `DEBUG-PHASE4-AT11.md`,
-  `DEBUG-PHASE45-AT11.md`, `DEBUG-PHASE45-USB-LINK.md`.
+- `docs/` — PHASE1–5 logs, `HANDOFF.md`, `DEBUG-PHASE4-AT11.md`,
+  `DEBUG-PHASE45-AT11.md`, `DEBUG-PHASE45-USB-LINK.md`,
+  `DEBUG-MDNS-STALE-NAME.md`.
 
 ## Hard-won constraints (violating these has cost reboots)
 
@@ -59,10 +62,14 @@ in `.venv` themselves. The Mac agent runs from `../agent` with its own venv
   append-only — `compact()` filters evicted command_ids, it does not
   rewrite history. `test_ledger` pins this.
 - **Honesty invariants**: Mode A commands NEVER terminate `completed`;
-  only `mcco::ErrCode` values may be emitted; the agent token and admin
-  password never appear in logs.
+  in Mode B only MCA evidence completes a record (app ack + event,
+  `screen_lock_changed`, window/offline/boot_id/ICMP predicates,
+  `expected_event`) — `completed` never comes from HID success alone;
+  terminal records are NEVER reopened by later evidence (late/duplicate
+  results are ignored, never an error); only `mcco::ErrCode` values may be
+  emitted; the agent token and admin password never appear in logs.
 
-## Hardware landmines (S3 bench, device mac-b53478)
+## Hardware landmines (S3 bench, renamed: control-graphics.local)
 
 - **Any serial port open or close reboots the board** (macOS DTR/RTS →
   EN/IO0 via the CH343). Serial access is a deliberate reset: the boot
@@ -80,6 +87,20 @@ in `.venv` themselves. The Mac agent runs from `../agent` with its own venv
   (fragmentation presents exactly like an AP problem). Do NOT add
   outbound-probe "supervisors" — tried, reverted, documented in
   `docs/DEBUG-PHASE4-AT11.md`.
+- **The bench answers mDNS as `control-graphics.local`** (10.10.40.242);
+  `mac-b53478.local` is a stale name macOS intermittently resolves to a
+  dead/wrong IP. An AT agent whose state file holds the old hostname
+  retries forever, logging every failure (DNS/connect/upgrade) as
+  "hello_ack timeout" — fix the state file's `hostname` first.
+  `docs/DEBUG-MDNS-STALE-NAME.md`.
+- **ONE power source for the board, always.** The PSU rewire is defeated
+  if any cable's VBUS also feeds the rail (observed 2026-09-27: the 'com'
+  cable's 5 V back-fed the rail; a Mac reboot cycled its port power and
+  rebooted the ESP32 mid-AT-08-window, `reset: poweron`). Use a data-only
+  'com' cable (taped/broken VBUS pin); the PSU must be the sole source.
+  Also: **macOS wipes /tmp at boot** — AT state files live in /tmp; the
+  phased AT scripts lose their chain state across a host reboot (the
+  at08 chain accepts a hand-reconstructed state file; consider /var/tmp).
 
 ## Docs to update when you change things
 

@@ -1,0 +1,4 @@
+source_env: esp32-s3-devkitc-1
+built: 2026-09-27T16:23:26Z
+git: ede2971
+git_desc: Protocol v2 - agent-executed power actions (sleep/restart/shutdown), dispatch shape relaxed, command_ack action enum widened

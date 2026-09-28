@@ -4,6 +4,7 @@ Usage:
   python -m maccontrol_agent [--hostname H] [--pair-code CODE]
       [--transport websocket|polling] [--poll-interval S]
       [--allow BUNDLE_ID ...] [--enable-launch] [--enable-quit]
+      [--enable-sleep] [--enable-restart] [--enable-shutdown]
       [--state-file PATH] [--headless] [--daemon] [--show-log]
 
 Exit codes: 0 clean, 2 halted (close 4001/4003/1008 or HTTP 403), 1 other error.
@@ -77,6 +78,11 @@ class Runtime:
         self.app_monitor = AppMonitor(state.allowlist, log)
         self.telemetry = Telemetry(self)
         self.ui = None
+        # Installed by the active transport while a session is live: a
+        # coroutine that returns once every outbox frame enqueued so far has
+        # been transmitted (actions._power awaits it before a power action so
+        # the declared goodbye provably leaves before the host acts).
+        self.flush_now = None
 
     def enqueue(self, etype, payload, command_id=None):
         try:
@@ -243,6 +249,12 @@ def build_parser():
                    help="enable the launch_app agent action")
     p.add_argument("--enable-quit", action="store_true",
                    help="enable the quit_app agent action")
+    p.add_argument("--enable-sleep", action="store_true",
+                   help="enable the sleep agent action (pmset sleepnow)")
+    p.add_argument("--enable-restart", action="store_true",
+                   help="enable the restart agent action (osascript System Events)")
+    p.add_argument("--enable-shutdown", action="store_true",
+                   help="enable the shutdown agent action (osascript System Events)")
     p.add_argument("--state-file", default=DEFAULT_STATE_PATH,
                    help="state file path (default: %(default)s)")
     p.add_argument("--headless", action="store_true",
@@ -288,6 +300,15 @@ def main(argv=None):
         changed = True
     if args.enable_quit:
         state.enabled_commands["quit_app"] = True
+        changed = True
+    if args.enable_sleep:
+        state.enabled_commands["sleep"] = True
+        changed = True
+    if args.enable_restart:
+        state.enabled_commands["restart"] = True
+        changed = True
+    if args.enable_shutdown:
+        state.enabled_commands["shutdown"] = True
         changed = True
     if changed or not os.path.exists(args.state_file):
         try:

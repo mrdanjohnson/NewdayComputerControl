@@ -45,6 +45,15 @@ static bool str_in(const char* v, std::initializer_list<const char*> opts) {
     return false;
 }
 
+// Closed dispatch/ack action enum (spec 6.2.1, protocol v2 amendment): the
+// two app actions plus the three agent-executed power actions. App actions
+// carry a bundle_id; power actions never do.
+static bool agent_action_known(const char* v, bool& is_power) {
+    if (str_in(v, {"launch_app", "quit_app"})) { is_power = false; return true; }
+    if (str_in(v, {"sleep", "restart", "shutdown"})) { is_power = true; return true; }
+    return false;
+}
+
 // Unknown keys in the envelope or payload are schema violations (spec 6.1.1).
 // Checks the payload carries exactly `required` keys and nothing else.
 // (Key-iteration rather than operator[] because a present-but-null value
@@ -136,12 +145,17 @@ static AgentEventError validate_payload(AgentEventType t, JsonObjectConst p) {
                 !str_in(p["reason"].as<const char*>(), {"quit", "crashed", "requested_by_agent"}))
                 return AgentEventError::SchemaViolation;
             return AgentEventError::Ok;
-        case AgentEventType::CommandAck:
+        case AgentEventType::CommandAck: {
+            // Keys stay {command_id, action} (spec 6.2.1); protocol v2 widens
+            // the action enum to the agent-executed power actions.
             if (!payload_keys_exact(p, {"command_id", "action"}) ||
-                !p["command_id"].is<const char*>() ||
-                !str_in(p["action"].as<const char*>(), {"launch_app", "quit_app"}))
+                !p["command_id"].is<const char*>() || !p["action"].is<const char*>())
+                return AgentEventError::SchemaViolation;
+            bool is_power;
+            if (!agent_action_known(p["action"].as<const char*>(), is_power))
                 return AgentEventError::SchemaViolation;
             return AgentEventError::Ok;
+        }
         case AgentEventType::CommandResult: {
             if (!payload_keys_exact(p, {"command_id", "outcome", "error_code"}) ||
                 !p["command_id"].is<const char*>() ||
@@ -171,8 +185,9 @@ static AgentEventError validate_payload(AgentEventType t, JsonObjectConst p) {
                 !p["allowlisted_apps"].is<JsonArrayConst>())
                 return AgentEventError::SchemaViolation;
             for (JsonVariantConst c : p["enabled_commands"].as<JsonArrayConst>()) {
-                if (!c.is<const char*>() ||
-                    !str_in(c.as<const char*>(), {"launch_app", "quit_app"}))
+                if (!c.is<const char*>()) return AgentEventError::SchemaViolation;
+                bool is_power;
+                if (!agent_action_known(c.as<const char*>(), is_power))
                     return AgentEventError::SchemaViolation;
             }
             for (JsonVariantConst e : p["allowlisted_apps"].as<JsonArrayConst>()) {
@@ -228,6 +243,33 @@ AgentEventError parse_agent_event(const std::string& json, AgentEvent& out) {
 
     out.payload_json.clear();
     serializeJson(p, out.payload_json);
+    return AgentEventError::Ok;
+}
+
+AgentEventError validate_dispatch_json(const std::string& json) {
+    JsonDocument doc;
+    if (deserializeJson(doc, json) || !doc.is<JsonObjectConst>())
+        return AgentEventError::MalformedJson;
+    JsonObjectConst o = doc.as<JsonObjectConst>();
+
+    const char* action = o["action"].as<const char*>();
+    const char* command_id = o["command_id"].as<const char*>();
+    if (!action || !command_id || command_id[0] == '\0')
+        return AgentEventError::SchemaViolation;
+
+    bool is_power;
+    if (!agent_action_known(action, is_power)) return AgentEventError::SchemaViolation;
+
+    // Closed key set {action, bundle_id?, command_id}; bundle_id is required
+    // for the app actions and forbidden for the power actions.
+    const bool has_bundle = !o["bundle_id"].isNull();
+    if (is_power) {
+        if (has_bundle || o.size() != 2) return AgentEventError::SchemaViolation;
+    } else {
+        if (!has_bundle || o.size() != 3 || !o["bundle_id"].is<const char*>() ||
+            o["bundle_id"].as<const char*>()[0] == '\0')
+            return AgentEventError::SchemaViolation;
+    }
     return AgentEventError::Ok;
 }
 

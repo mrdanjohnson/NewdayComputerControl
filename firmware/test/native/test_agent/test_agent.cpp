@@ -20,7 +20,7 @@ struct FakeRandom : mcco::IRandom {
     }
 };
 
-mcco::AgentEvent hello(int seq = 1, int proto = 1) {
+mcco::AgentEvent hello(int seq = 1, int proto = 2) {
     mcco::AgentEvent ev;
     ev.event_id = "evt_1";
     ev.agent_instance_id = "ag-7e21";
@@ -57,7 +57,7 @@ TEST(AgentEvents, HelloRoundTrip) {
     const char* json =
         "{\"event_id\":\"evt_1\",\"agent_instance_id\":\"ag-7e21\",\"seq\":1,"
         "\"timestamp\":\"2025-01-14T09:31:10Z\",\"type\":\"agent_hello\",\"command_id\":null,"
-        "\"payload\":{\"protocol_version\":1,\"agent_version\":\"1.0.0\","
+        "\"payload\":{\"protocol_version\":2,\"agent_version\":\"1.0.0\","
         "\"boot_id\":\"b_3F8A11\",\"hostname\":\"mac-propresenter\"}}";
     mcco::AgentEvent ev;
     ASSERT_EQ(mcco::parse_agent_event(json, ev), mcco::AgentEventError::Ok);
@@ -69,7 +69,7 @@ TEST(AgentEvents, HelloRoundTrip) {
 TEST(AgentEvents, TwelveTypesAllValidate) {
     struct Case { const char* type; const char* payload; };
     Case cases[] = {
-        {"agent_hello", "{\"protocol_version\":1,\"agent_version\":\"1.0.0\",\"boot_id\":\"b\",\"hostname\":\"h\"}"},
+        {"agent_hello", "{\"protocol_version\":2,\"agent_version\":\"1.0.0\",\"boot_id\":\"b\",\"hostname\":\"h\"}"},
         {"agent_goodbye", "{\"reason\":\"sleep\"}"},
         {"heartbeat", "{\"boot_id\":\"b\",\"uptime_s\":5,\"mac_uptime_s\":86400,"
                       "\"boot_time\":1736848800,\"cpu_utilization_pct\":12.5,"
@@ -86,11 +86,15 @@ TEST(AgentEvents, TwelveTypesAllValidate) {
         {"application_started", "{\"bundle_id\":\"com.x\",\"pid\":812}"},
         {"application_exited", "{\"bundle_id\":\"com.x\",\"pid\":812,\"reason\":\"quit\"}"},
         {"command_ack", "{\"command_id\":\"8F31A2C4\",\"action\":\"launch_app\"}"},
+        {"command_ack", "{\"command_id\":\"8F31A2C4\",\"action\":\"sleep\"}"},
+        {"command_ack", "{\"command_id\":\"8F31A2C4\",\"action\":\"restart\"}"},
+        {"command_ack", "{\"command_id\":\"8F31A2C4\",\"action\":\"shutdown\"}"},
         {"command_result", "{\"command_id\":\"8F31A2C4\",\"outcome\":\"ok\",\"error_code\":null}"},
         {"command_result", "{\"command_id\":\"8F31A2C4\",\"outcome\":\"failed\",\"error_code\":\"launch_failed\"}"},
-        {"capability_report", "{\"agent_version\":\"1.0.0\",\"protocol_version\":1,"
+        {"command_result", "{\"command_id\":\"8F31A2C4\",\"outcome\":\"failed\",\"error_code\":\"command_disabled\"}"},
+        {"capability_report", "{\"agent_version\":\"1.0.0\",\"protocol_version\":2,"
          "\"os_version\":\"14.3\",\"hardware_model\":\"Mac14,9\","
-         "\"enabled_commands\":[\"launch_app\"],"
+         "\"enabled_commands\":[\"launch_app\",\"sleep\"],"
          "\"allowlisted_apps\":[{\"bundle_id\":\"com.x\",\"state\":\"running\"}]}"},
         {"front_app_changed", "{\"bundle_id\":\"com.x\"}"},
         {"front_app_changed", "{\"bundle_id\":null}"},
@@ -178,6 +182,67 @@ TEST(AgentEvents, FrontAppChangedValidation) {
               mcco::AgentEventError::SchemaViolation);
 }
 
+TEST(AgentEvents, CommandAckPowerActionEnum) {
+    // Protocol v2: the command_ack action enum widens to the agent-executed
+    // power actions; the payload stays {command_id, action} on both shapes.
+    mcco::AgentEvent ev;
+    for (const char* action : {"sleep", "restart", "shutdown"}) {
+        std::string json = std::string(
+            "{\"event_id\":\"e\",\"agent_instance_id\":\"a\",\"seq\":1,\"timestamp\":\"t\","
+            "\"type\":\"command_ack\",\"payload\":{\"command_id\":\"8F31A2C4\",\"action\":\"") +
+            action + "\"}}";
+        EXPECT_EQ(mcco::parse_agent_event(json, ev), mcco::AgentEventError::Ok) << action;
+    }
+    // Unknown action is a schema violation (closed enum).
+    EXPECT_EQ(mcco::parse_agent_event(
+                  "{\"event_id\":\"e\",\"agent_instance_id\":\"a\",\"seq\":1,\"timestamp\":\"t\","
+                  "\"type\":\"command_ack\",\"payload\":{\"command_id\":\"c\",\"action\":\"hibernate\"}}", ev),
+              mcco::AgentEventError::SchemaViolation);
+    // command_id must be a string.
+    EXPECT_EQ(mcco::parse_agent_event(
+                  "{\"event_id\":\"e\",\"agent_instance_id\":\"a\",\"seq\":1,\"timestamp\":\"t\","
+                  "\"type\":\"command_ack\",\"payload\":{\"command_id\":7,\"action\":\"sleep\"}}", ev),
+              mcco::AgentEventError::SchemaViolation);
+}
+
+TEST(AgentEvents, DispatchShapeValidation) {
+    using mcco::validate_dispatch_json;
+    using mcco::AgentEventError;
+    // Power actions carry {action, command_id} only — no bundle_id.
+    EXPECT_EQ(validate_dispatch_json("{\"action\":\"sleep\",\"command_id\":\"8F31A2C4\"}"),
+              AgentEventError::Ok);
+    EXPECT_EQ(validate_dispatch_json("{\"action\":\"restart\",\"command_id\":\"8F31A2C4\"}"),
+              AgentEventError::Ok);
+    EXPECT_EQ(validate_dispatch_json("{\"action\":\"shutdown\",\"command_id\":\"8F31A2C4\"}"),
+              AgentEventError::Ok);
+    // App actions still require a bundle_id.
+    EXPECT_EQ(validate_dispatch_json(
+                  "{\"action\":\"launch_app\",\"bundle_id\":\"com.x\",\"command_id\":\"8F31A2C4\"}"),
+              AgentEventError::Ok);
+    EXPECT_EQ(validate_dispatch_json("{\"action\":\"quit_app\",\"command_id\":\"8F31A2C4\"}"),
+              AgentEventError::SchemaViolation);                 // missing bundle_id
+    EXPECT_EQ(validate_dispatch_json(
+                  "{\"action\":\"launch_app\",\"bundle_id\":\"com.x\"}"),
+              AgentEventError::SchemaViolation);                 // missing command_id
+    EXPECT_EQ(validate_dispatch_json(
+                  "{\"action\":\"launch_app\",\"bundle_id\":\"\",\"command_id\":\"8F31A2C4\"}"),
+              AgentEventError::SchemaViolation);                 // empty bundle_id
+    // A bundle_id on a power action is a violation (extra key).
+    EXPECT_EQ(validate_dispatch_json(
+                  "{\"action\":\"sleep\",\"bundle_id\":\"com.x\",\"command_id\":\"8F31A2C4\"}"),
+              AgentEventError::SchemaViolation);
+    // Unknown action / unexpected key / empty command_id / not an object.
+    EXPECT_EQ(validate_dispatch_json("{\"action\":\"hibernate\",\"command_id\":\"8F31A2C4\"}"),
+              AgentEventError::SchemaViolation);
+    EXPECT_EQ(validate_dispatch_json(
+                  "{\"action\":\"sleep\",\"command_id\":\"8F31A2C4\",\"extra\":1}"),
+              AgentEventError::SchemaViolation);
+    EXPECT_EQ(validate_dispatch_json("{\"action\":\"sleep\",\"command_id\":\"\"}"),
+              AgentEventError::SchemaViolation);
+    EXPECT_EQ(validate_dispatch_json("not json"), AgentEventError::MalformedJson);
+    EXPECT_EQ(validate_dispatch_json("[1,2]"), AgentEventError::MalformedJson);
+}
+
 TEST(AgentEvents, RejectsUnknownTypeAndSchemaViolations) {
     mcco::AgentEvent ev;
     EXPECT_EQ(mcco::parse_agent_event(
@@ -260,7 +325,7 @@ TEST(AgentSession, RejectsBadHello) {
     }
     {
         mcco::AgentSession s(rng, clock);
-        EXPECT_EQ(s.acceptHello(hello(1, 2)), 4003); // protocol mismatch
+        EXPECT_EQ(s.acceptHello(hello(1, 1)), 4003); // protocol v1 no longer supported
     }
     {
         mcco::AgentSession s(rng, clock);

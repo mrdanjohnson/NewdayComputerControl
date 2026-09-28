@@ -27,10 +27,26 @@ POLL_INTERVAL=""
 HEADLESS=0
 NO_START=0
 UNINSTALL=0
+FLASH=0
+PROVISION=0
+PORT_OPT=""
+WIFI_SSID=""
+WIFI_PASS=""
+ADMIN_PASSWORD=""
+NO_KEYS=0
+RE_PAIR=0
+
+# Derived from the repo layout; used by --flash/--provision.
+FIRMWARE_DIR="$AGENT_DIR/../firmware"
+FLASH_DIST_DIR="$FIRMWARE_DIR/dist/esp32-s3"
+PROVISION_JSON=""   # serial-phase JSON result (contains the API keys)
+NETWORK_JSON=""     # network-phase JSON result
+DISCOVERED_HOSTNAME=""
 
 usage_raw() {
     cat <<'EOF'
 MacControlAgent installer — sets up the agent and starts it at login.
+Can also flash and provision a MacControl endpoint (ESP32-S3) from this Mac.
 
 USAGE
   ./install.sh [OPTIONS]
@@ -40,7 +56,8 @@ FIRST RUN (install + pair + configure)
       --allow com.apple.Terminal com.apple.Safari \
       --enable-launch --enable-quit
 
-  1. Creates agent/.venv and installs requirements.txt (skipped if present).
+  1. Creates agent/.venv and installs requirements.txt (recreates it if a
+     copied/broken .venv is found).
   2. Pairs with the endpoint (open the pairing window on the ESP32 Web UI
      first; the code is valid for ~120 s) and stores the token in
      ~/.maccontrol/agent.json (chmod 600).
@@ -48,12 +65,38 @@ FIRST RUN (install + pair + configure)
   4. Installs ~/Library/LaunchAgents/com.maccontrol.agent.plist and loads it,
      so the agent runs at login (RunAtLoad + KeepAlive).
 
+ONE INSTALLER (flash + provision + pair + install, start to finish)
+  ./install.sh --flash --provision \
+      --allow com.apple.Terminal --enable-launch --enable-quit
+
+  Flashes firmware/dist/esp32-s3 to an ESP32-S3 over USB, then sets WiFi +
+  API keys + admin password over the serial console, discovers the device on
+  the network, opens the pairing window, pairs this Mac, and finishes with
+  the normal config + LaunchAgent steps. Phases are idempotent: a failure
+  tells you what to fix, and re-running continues where it left off.
+
 RE-RUNNING RECONFIGURES
   ./install.sh --allow com.apple.Terminal            # change the allowlist
   ./install.sh --disable-quit                        # turn an action off
   ./install.sh --hostname maccontrol-02 --pair-code XYZ789AB   # re-pair
 
-OPTIONS
+ENDPOINT OPTIONS
+  --flash              Flash firmware/dist/esp32-s3 to an ESP32-S3 (stops
+                       after flashing unless --provision is also given).
+  --provision          Full endpoint setup on an already-flashed board:
+                       serial phase (WiFi + keys + admin password) then
+                       network phase (discover, pairing window, pair agent).
+  --port P             Serial port for --flash/--provision (skips the
+                       interactive auto-detect).
+  --wifi-ssid S        WiFi network for the endpoint (prompted when missing).
+  --wifi-pass P        WiFi password (prompted when missing; never printed).
+  --admin-password PW  Endpoint admin password, min 10 chars (prompted when
+                       missing; used for 'admin set' and the Web UI login).
+  --no-keys            Skip API key creation (serial phase does WiFi+admin only).
+  --re-pair            Re-pair even if ~/.maccontrol/agent.json already holds
+                       a token (otherwise the network phase refuses).
+
+AGENT OPTIONS
   --hostname H         Endpoint hostname (bare label or FQDN).
   --pair-code CODE     8-character pairing code; pairs, then continues.
   --allow B [B ...]    Replace the app allowlist (bundle IDs).
@@ -104,6 +147,14 @@ while [[ $# -gt 0 ]]; do
         --headless)      HEADLESS=1; shift ;;
         --no-start)      NO_START=1; shift ;;
         --uninstall)     UNINSTALL=1; shift ;;
+        --flash)         FLASH=1; shift ;;
+        --provision)     PROVISION=1; shift ;;
+        --port)          PORT_OPT="${2:?--port needs a value}"; shift 2 ;;
+        --wifi-ssid)     WIFI_SSID="${2:?--wifi-ssid needs a value}"; shift 2 ;;
+        --wifi-pass)     WIFI_PASS="${2:?--wifi-pass needs a value}"; shift 2 ;;
+        --admin-password) ADMIN_PASSWORD="${2:?--admin-password needs a value}"; shift 2 ;;
+        --no-keys)       NO_KEYS=1; shift ;;
+        --re-pair)       RE_PAIR=1; shift ;;
         -h|--help)       usage; exit 0 ;;
         *) die "unknown option: $1 (try --help)" ;;
     esac
@@ -131,13 +182,212 @@ python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' \
 # The package is not pip-installed; run it from the agent directory.
 cd "$AGENT_DIR"
 
-if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+venv_healthy() {
+    [[ -x "$VENV_DIR/bin/python" ]] \
+        && "$VENV_DIR/bin/python" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' \
+            >/dev/null 2>&1
+}
+
+if ! venv_healthy; then
+    if [[ -e "$VENV_DIR" ]]; then
+        warn "existing .venv is broken or came from another machine (copied venvs die on new hosts); recreating it"
+        rm -rf "$VENV_DIR"
+    fi
     log "Creating virtualenv at $VENV_DIR"
     python3 -m venv "$VENV_DIR"
 fi
 log "Installing Python dependencies"
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip
 "$VENV_DIR/bin/pip" install --quiet -r "$AGENT_DIR/requirements.txt"
+
+# --- endpoint: flash + provision ---------------------------------------------
+# Flow: preflight -> venv (above) -> pip extras -> flash -> serial -> network
+# -> config -> LaunchAgent. Each phase's failure message says what to fix and
+# notes that re-running is safe (phases are idempotent).
+
+if [[ "$PROVISION" -eq 1 && -z "$WIFI_SSID" && -z "$ADMIN_PASSWORD" ]]; then
+    die "--provision needs --wifi-ssid/--wifi-pass and --admin-password (they are prompted for interactively when stdin is a TTY)"
+fi
+if [[ -n "$ADMIN_PASSWORD" && ${#ADMIN_PASSWORD} -lt 10 ]]; then
+    die "--admin-password must be at least 10 characters"
+fi
+if [[ -n "$PORT_OPT" || -n "$WIFI_SSID" || -n "$WIFI_PASS" || -n "$ADMIN_PASSWORD" ]] \
+    && [[ "$FLASH" -eq 0 && "$PROVISION" -eq 0 ]]; then
+    die "--port/--wifi-ssid/--wifi-pass/--admin-password only apply with --flash or --provision"
+fi
+if [[ "$FLASH" -eq 1 || "$PROVISION" -eq 1 ]]; then
+    [[ -d "$FLASH_DIST_DIR" ]] \
+        || die "firmware flash bundle not found at $FLASH_DIST_DIR (expected firmware/dist/esp32-s3 from the repo)"
+    log "Installing esptool + pyserial for the endpoint phase"
+    "$VENV_DIR/bin/pip" install --quiet esptool pyserial
+fi
+
+detect_serial_port() {
+    local ports=()
+    local p
+    for p in /dev/cu.usbmodem* /dev/cu.wchusbserial* /dev/cu.usbserial*; do
+        [[ -e "$p" ]] && ports+=("$p")
+    done
+    if [[ ${#ports[@]} -eq 0 ]]; then
+        die "no ESP32 serial port found. Check the USB cable to the board's 'com' (CH343 UART) port, install the WCH CH34x/CH343 driver (https://www.wch.cn/downloads/CH341SER_MAC_ZIP.html), then re-run"
+    fi
+    if [[ ${#ports[@]} -eq 1 ]]; then
+        printf '%s\n' "${ports[0]}"
+        return 0
+    fi
+    printf 'Multiple serial ports found:\n' >&2
+    local i
+    for i in "${!ports[@]}"; do
+        printf '  %d) %s\n' "$((i + 1))" "${ports[$i]}" >&2
+    done
+    local choice=""
+    if [[ -t 0 ]]; then
+        read -r -p "Pick a port number: " choice
+    fi
+    [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#ports[@]} ]] \
+        || die "no valid port picked"
+    printf '%s\n' "${ports[$((choice - 1))]}"
+}
+
+prompt_secret() {
+    # $1 = prompt, $2 = confirmation label. Echo is disabled; never printed.
+    local value=""
+    if [[ -t 0 ]]; then
+        read -r -s -p "$1: " value
+        printf '\n' >&2
+    else
+        die "$2 was not given and stdin is not a TTY to prompt for it"
+    fi
+    printf '%s' "$value"
+}
+
+prompt_admin_password() {
+    if [[ -n "$ADMIN_PASSWORD" ]]; then
+        [[ ${#ADMIN_PASSWORD} -ge 10 ]] \
+            || die "--admin-password must be at least 10 characters"
+        return 0
+    fi
+    local attempt
+    for attempt in 1 2; do
+        ADMIN_PASSWORD="$(prompt_secret "Endpoint admin password (min 10 chars, input hidden)" "admin password")"
+        [[ ${#ADMIN_PASSWORD} -ge 10 ]] && return 0
+        warn "admin password must be at least 10 characters (attempt $attempt/2)"
+    done
+    die "admin password still too short; re-run with a password of 10+ characters"
+}
+
+if [[ "$FLASH" -eq 1 || "$PROVISION" -eq 1 ]]; then
+    SERIAL_PORT="$PORT_OPT"
+    if [[ -z "$SERIAL_PORT" ]]; then
+        SERIAL_PORT="$(detect_serial_port)"
+    fi
+    log "Using serial port $SERIAL_PORT (opening it reboots the board — expected)"
+fi
+
+if [[ "$FLASH" -eq 1 ]]; then
+    log "Flashing firmware $(cat "$FLASH_DIST_DIR/VERSION" | head -1) to ESP32-S3 on $SERIAL_PORT"
+    (
+        cd "$FLASH_DIST_DIR"
+        "$VENV_DIR/bin/esptool.py" --chip esp32s3 --port "$SERIAL_PORT" --baud 921600 \
+            --before default_reset --after hard_reset write_flash -z \
+            --flash_mode dio --flash_freq 80m --flash_size 8MB \
+            0x0000 bootloader.bin 0x8000 partitions.bin 0xe000 boot_app0.bin \
+            0x10000 firmware.bin
+    ) || die "flashing failed (check the cable/port; power-cycle the board and re-run — re-flashing is safe)"
+    log "Flashing complete"
+fi
+
+if [[ "$PROVISION" -eq 1 ]]; then
+    if [[ -z "$WIFI_SSID" ]]; then
+        die "--provision needs --wifi-ssid/--wifi-pass (the endpoint must join your network for the network phase)"
+    fi
+    if [[ -z "$WIFI_PASS" ]]; then
+        WIFI_PASS="$(prompt_secret "WiFi password for '$WIFI_SSID' (input hidden)" "WiFi password")"
+        [[ -n "$WIFI_PASS" ]] || die "WiFi password cannot be empty"
+    fi
+    prompt_admin_password
+
+    SERIAL_ARGS=(--port "$SERIAL_PORT" --reboot --admin-password "$ADMIN_PASSWORD"
+                 --wifi-ssid "$WIFI_SSID" --wifi-pass "$WIFI_PASS")
+    if [[ "$NO_KEYS" -eq 1 ]]; then
+        SERIAL_ARGS+=(--no-keys)
+    else
+        SERIAL_ARGS+=(--keys-label "install-$(date +%Y%m%d)")
+    fi
+    log "Serial phase: WiFi + keys + admin password over $SERIAL_PORT (board will reboot once on port open)"
+    PROVISION_JSON="$("$VENV_DIR/bin/python" - "$AGENT_DIR" "${SERIAL_ARGS[@]}" <<'PYEOF'
+import sys
+sys.path.insert(0, sys.argv[1])
+sys.argv = ["mc_provision.py", "serial"] + sys.argv[2:]
+import mc_provision
+sys._mc_console_log = lambda msg: print("==> %s" % msg, file=sys.stderr)
+raise SystemExit(mc_provision.main())
+PYEOF
+)" || die "serial provisioning failed (fix the issue and re-run with --provision; completed steps are safe to repeat)"
+
+    if [[ "$NO_KEYS" -eq 0 ]]; then
+        READ_KEY="$(printf '%s' "$PROVISION_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["keys"]["READ"]["raw"])')" \
+            || die "could not parse the serial phase result"
+        mkdir -p "$STATE_DIR"
+        KEYS_FILE="$STATE_DIR/endpoint.keys"
+        {
+            printf 'ENDPOINT_HOSTNAME=\n'   # filled in after the network phase
+            printf 'READ_KEY=%s\n' "$(printf '%s' "$PROVISION_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["keys"]["READ"]["raw"])')"
+            printf 'CONTROL_KEY=%s\n' "$(printf '%s' "$PROVISION_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["keys"]["CONTROL"]["raw"])')"
+            printf 'ADMIN_KEY=%s\n' "$(printf '%s' "$PROVISION_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["keys"]["ADMIN"]["raw"])')"
+        } > "$KEYS_FILE"
+        chmod 600 "$KEYS_FILE"
+        log "Wrote $KEYS_FILE (chmod 600)"
+        cat >&2 <<'EOF'
+
+  The endpoint API keys are shown exactly once here and are never stored in
+  the agent state or logs. Store them somewhere safe, then remove this
+  terminal scrollback if the machine is shared.
+EOF
+        for role in READ CONTROL ADMIN; do
+            key_line="$(printf '%s' "$PROVISION_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['keys']['$role']['raw'])")"
+            printf '  %s_KEY=%s\n' "$role" "$key_line" >&2
+        done
+    fi
+
+    # Network phase: discover, refuse to clobber an existing pairing unless
+    # --re-pair, open the pairing window, pair the agent, verify the session.
+    HOST_FOR_NETWORK="$HOSTNAME_OPT"
+    if [[ -z "$HOST_FOR_NETWORK" ]]; then
+        HOST_FOR_NETWORK="$(printf '%s' "$PROVISION_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ip") or "")' || true)"
+    fi
+    [[ -n "$HOST_FOR_NETWORK" ]] || die "no hostname or IP to reach the endpoint on"
+
+    if [[ "$RE_PAIR" -eq 0 && -s "$STATE_DIR/agent.json" ]] \
+        && python3 -c 'import json,os,sys; d=json.load(open(os.path.expanduser("~/.maccontrol/agent.json"))); sys.exit(0 if d.get("agent_token") else 1)' >/dev/null 2>&1; then
+        die "$HOME/.maccontrol/agent.json already holds a pairing token. Re-run with --re-pair to replace it, or --uninstall first"
+    fi
+
+    log "Network phase: discovering $HOST_FOR_NETWORK, opening the pairing window, pairing the agent"
+    NETWORK_JSON="$(MC_READ_KEY="${READ_KEY:-}" "$VENV_DIR/bin/python" - "$AGENT_DIR" --hostname "$HOST_FOR_NETWORK" --admin-password "$ADMIN_PASSWORD" <<'PYEOF'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+sys.argv = ["mc_provision.py", "network"] + sys.argv[2:]
+import mc_provision
+sys._mc_console_log = lambda msg: print("==> %s" % msg, file=sys.stderr)
+raise SystemExit(mc_provision.main())
+PYEOF
+)" || die "network provisioning failed (the device is reachable but pairing did not complete; re-run with --provision --re-pair — WiFi and keys are already set)"
+    DISCOVERED_HOSTNAME="$(printf '%s' "$NETWORK_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hostname"])')" \
+        || die "could not parse the network phase result"
+    log "Endpoint paired as $DISCOVERED_HOSTNAME"
+    # The endpoint.keys placeholder now gets the authoritative hostname.
+    if [[ "$NO_KEYS" -eq 0 && -f "$STATE_DIR/endpoint.keys" ]]; then
+        sed -i '' -e "s|^ENDPOINT_HOSTNAME=.*|ENDPOINT_HOSTNAME=$DISCOVERED_HOSTNAME|" "$STATE_DIR/endpoint.keys"
+    fi
+    # The config/pairing sections below operate on this endpoint.
+    HOSTNAME_OPT="$DISCOVERED_HOSTNAME"
+fi
+
+if [[ "$FLASH" -eq 1 && "$PROVISION" -eq 0 ]]; then
+    log "Flashed (--flash without --provision: done; re-run with --provision to set WiFi, keys, and pairing)"
+    exit 0
+fi
 
 # --- pairing -----------------------------------------------------------------
 

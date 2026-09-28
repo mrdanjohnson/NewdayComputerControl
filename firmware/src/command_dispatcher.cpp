@@ -112,6 +112,34 @@ void CommandDispatcher::taskEntry(void* arg) {
             continue;
         }
 
+        // Agent-executed power actions (protocol v2): in Mode B with a live
+        // session the MCA performs sleep/restart/shutdown in software and
+        // declares the matching expected-offline goodbye before acting; the
+        // record stays `confirming` and the engine completes it from
+        // goodbye/window/boot_id evidence. Mode A (or a dead session) keeps
+        // the HID path below.
+        if ((type == mcco::CommandType::Sleep || type == mcco::CommandType::Restart ||
+             type == mcco::CommandType::Shutdown) &&
+            ctx->agent_link && ctx->agent_link->sessionActive()) {
+            const char* action = (type == mcco::CommandType::Sleep)     ? "sleep"
+                                 : (type == mcco::CommandType::Restart) ? "restart"
+                                                                        : "shutdown";
+            const bool ok = ctx->agent_link->enqueueDispatch(action, "", item.command_id);
+            {
+                Guard g(ctx->engine_mutex);
+                if (ok) {
+                    ctx->engine->complete_dispatch(item.command_id, true);
+                } else {
+                    ctx->engine->fail_dispatch(item.command_id, "dispatch_error");
+                }
+            }
+            ctx->log->write(mcco::LogCategory::Command,
+                            ok ? mcco::LogLevel::Info : mcco::LogLevel::Error,
+                            ok ? "agent_dispatch" : "agent_dispatch_failed", item.command_id,
+                            nullptr, nullptr, nullptr);
+            continue;
+        }
+
         if (type == mcco::CommandType::AppLaunch || type == mcco::CommandType::AppQuit) {
             // Mode B: the MCA executes the action and the terminal verdict
             // arrives as command_ack + application evidence (spec 5.3.1); the

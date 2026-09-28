@@ -518,6 +518,15 @@ class Telemetry:
     def mark_agent_quit(self, bundle_id):
         self._quit_marks[bundle_id] = time.monotonic()
 
+    def mark_power_action(self):
+        """mark_agent_quit-equivalent for an initiated power action: apps that
+        die with the host (restart/shutdown) are labeled requested_by_agent if
+        a pre-power-off exit sweep observes them, rather than quit/crashed.
+        No-op in effect for sleep (apps stay alive; the marks just expire)."""
+        now = time.monotonic()
+        for bundle_id in self._apps:
+            self._quit_marks[bundle_id] = now
+
     def running_apps(self):
         if not self._apps:
             self._apps = self.rt.app_monitor.probe()

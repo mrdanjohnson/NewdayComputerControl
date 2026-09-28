@@ -19,6 +19,7 @@
 
 #if MC_HAS_USB_HID
 #include <USB.h>
+#include <USBHID.h>
 #include <USBHIDKeyboard.h>
 #include <tusb.h>
 
@@ -27,11 +28,50 @@
 static constexpr uint8_t kKeyPower = 0x66;
 
 USBHIDKeyboard Keyboard;
+
+// Sleep is dispatched as a HID System Control report (Generic Desktop page
+// 0x01, System Control collection 0x80, Sleep usage 0x82) — the mechanism
+// real keyboards use and macOS honors as instant SYSTEM sleep. The previous
+// Cmd+Alt+Power chord only slept the displays while the system kept running,
+// so the expected-offline evidence never arrived and the record timed out.
+// Descriptor written by hand: no report ID (report 0), one 1-bit Sleep field
+// + 7 bits of padding. Registered as a second device on the same HID
+// interface, alongside the keyboard report.
+static const uint8_t kSystemControlDesc[] = {
+    0x05, 0x01,        // Usage Page (Generic Desktop)
+    0x09, 0x80,        // Usage (System Control)
+    0xA1, 0x01,        // Collection (Application)
+    0x05, 0x01,        //   Usage Page (Generic Desktop)
+    0x09, 0x82,        //   Usage (Sleep)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x25, 0x01,        //   Logical Maximum (1)
+    0x75, 0x01,        //   Report Size (1)
+    0x95, 0x01,        //   Report Count (1)
+    0x81, 0x02,        //   Input (Data, Variable, Absolute)
+    0x95, 0x07,        //   Report Count (7)
+    0x81, 0x03,        //   Input (Constant) — padding
+    0xC0,              // End Collection
+};
+
+class SystemControlDevice : public USBHIDDevice {
+public:
+    uint16_t _onGetDescriptor(uint8_t* dst) override {
+        memcpy(dst, kSystemControlDesc, sizeof(kSystemControlDesc));
+        return sizeof(kSystemControlDesc);
+    }
+};
+static SystemControlDevice SystemControlDev;
+USBHID SystemControl;
 #endif
 
 void HidKeyboard::begin() {
 #if MC_HAS_USB_HID
     Keyboard.begin();
+    // Register the system-control descriptor BEFORE USB start: TinyUSB
+    // builds the HID report descriptor at enumeration, so a device added
+    // after USB.begin() never reaches the host.
+    SystemControl.addDevice(&SystemControlDev, sizeof(kSystemControlDesc));
+    SystemControl.begin();
     // TinyUSB does not start on its own: without this the device never
     // enumerates and every dispatch dies as dispatch_error.
     USB.begin();
@@ -75,12 +115,17 @@ bool HidKeyboard::send_once(mcco::CommandType type) {
             n_mods = 2;
             key = 'q';
             break;
-        case mcco::CommandType::Sleep:
-            mods[0] = KEY_LEFT_GUI;
-            mods[1] = KEY_LEFT_ALT;
-            n_mods = 2;
-            key = kKeyPower;
-            break;
+        case mcco::CommandType::Sleep: {
+            // System Control report: set the Sleep bit, hold briefly, then
+            // release (report 0 = no ID prefix). No keyboard-chord fallback:
+            // Cmd+Alt+Power only sleeps displays, which is semantically wrong.
+            if (!tud_mounted()) return false;
+            uint8_t sleep = 0x01;
+            if (!SystemControl.SendReport(0, &sleep, 1)) return false;
+            delay(100);
+            sleep = 0x00;
+            return SystemControl.SendReport(0, &sleep, 1);
+        }
         case mcco::CommandType::Restart:
             mods[0] = KEY_LEFT_CTRL;
             mods[1] = KEY_LEFT_GUI;

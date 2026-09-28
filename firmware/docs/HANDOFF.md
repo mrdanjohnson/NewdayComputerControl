@@ -4,8 +4,125 @@ Read this first in a new session, then `firmware/AGENTS.md`, then the
 phase doc for the work at hand. Project root:
 `/Users/danieljohnson/Public/ESP32-MCA Command Loop Design/`
 
-## Phase 5 kickoff (current state — start here)
+## 2026-09-27: sleep-dispatch fix BUILT + BUNDLED, flash BLOCKED on cabling
 
+> Sleep was dispatched as Cmd+Alt+Power — on modern macOS that only sleeps
+> DISPLAYS; the system keeps running, expected-offline evidence never
+> arrives, record times out at 90 s (verified via pmset + ledger). Fix:
+> `src/hid_keyboard.cpp` now registers a second HID device (raw `USBHID` +
+> `USBHIDDevice` subclass; this core 2.0.17 has no `setReportDescriptor`)
+> with a hand-written System Control descriptor (Generic Desktop 0x01,
+> collection 0x80, Sleep usage 0x82, no report ID) and sends Sleep as
+> report 0, byte 0x01 → 0x00. No chord fallback. wroom stub untouched.
+> S3 + wroom compile clean, native 144/144, `dist/esp32-s3/` refreshed
+> (VERSION built 2026-09-27T15:40:21Z). **NOT FLASHED:** the CH343 'com'
+> cable (`/dev/cu.usbmodem5CBD0148591`) is not enumerated — self-powered
+> bench rewire left it unplugged; the USB-Serial/JTAG (`/dev/cu.debug-console`,
+> 0x303a:0x1001) refuses esptool sync (likely PHY owned by the running
+> OTG HID). Plug the 'com' cable back in and rerun
+> `pio run -e esp32-s3-devkitc-1 -t upload`. Bench currently runs the
+> previous Phase 5 binary (network checks on it pass: Web UI 200, clean
+> 401s). No power command dispatched — human runs the live sleep test.
+
+## Phase 5 kickoff (state before the sleep fix)
+
+> **2026-09-27: Phase 5 foundation binary FLASHED to the bench S3 and
+> verified on hardware.** Upload over the CH343 UART succeeded; all
+> verification network-only (serial stayed closed). Boot: `reset:
+> poweron`, WiFi + mDNS up, Web UI 200, clean 401 envelopes; boot
+> reconciliation 901 ms over 148 ledger records (2 s bound); NVS/LittleFS
+> pairing/keys survived (app-partition flash only). With the paired MCA
+> connected: `/api/v1/capabilities` = **mode B, L3, all eight commands
+> available+verified**, app commands available; `/api/v1/agent/status` live
+> (session active, `boot_id b_578FC7`, system awake); status tuples render
+> fresh with boot_id present. The 30 s `[heap]` events keep flowing but
+> their ring `detail` is empty by design (>224 B slots) — mc_http HWM
+> after the 40→28 KB trim needs a serial soak to read. **Bench gotcha
+> burned on the way:** the S3 was renamed — mDNS answers
+> `control-graphics.local` (10.10.40.242), the old `mac-b53478.local` name
+> is a stale mDNS cache entry that intermittently resolves; the AT agent
+> state file still pointed at the old name and its retry loop logs any
+> connect/upgrade/DNS failure as "hello_ack timeout" (misleading). Full
+> forensics: `docs/DEBUG-MDNS-STALE-NAME.md`. AT-06/AT-11 regression on
+> this binary still owed before AT-07/08/09.
+>
+> **2026-09-27 (later): one-shot endpoint installer shipped.** `agent/
+> install.sh` now has `--flash` + `--provision`: flashes an S3 from the
+> committed bundle `firmware/dist/esp32-s3/` (bootloader/partitions/
+> boot_app0/app + VERSION; refresh from `.pio/build` after each firmware
+> change) via esptool, then serial-provisions WiFi + 3 API keys + admin
+> password (→ `~/.maccontrol/endpoint.keys`, shown once), then opens the
+> pairing window over the Web UI API and pairs the agent — full flow:
+> `./install.sh --flash --provision --allow … --enable-launch --enable-quit`.
+> Also fixes the copied-`.venv` bug (broken symlinks from another machine are
+> detected by *executing* the interpreter and auto-recreated). The flash
+> recipe was captured verbatim from `pio run -t upload -v`. Re-provision on a
+> used device re-ADDS keys (8-key cap; revoke old ones first).
+>
+> **2026-09-27 (evening): AT-07/08/09 authored** (`firmware/scripts/at07.py`,
+> at08.py, at09.py — at11 idioms, two-consecutive-rounds each, py_compile +
+> --help verified, NOT yet live-run). AT-07 (verified lock) is runnable now
+> (no sleep involved; pairing is already this Mac's agent ag-4d00 — a run
+> LOCKS THE USER'S SCREEN, by design). **Topology blocker for AT-08/09:** the
+> HID cable attaches to THIS Mac — the harness host — so sleeping/restarting
+> the "target" freezes the harness mid-test, and AT-09's in-window status
+> sampling is impossible co-located. Awaiting the user's call: second Mac as
+> target (move the HID cable; harness stays here), or a post-hoc +
+> `pmset scheduled-wake` partial-coverage mode (restart fully verifiable
+> post-hoc from the ledger/log timestamps; sleep/wake exercises the
+> new-session predicate via a post-dispatch wake command; AT-09's
+> during-window sample still needs some awake LAN device for one GET).
+>
+> **2026-09-27 (night): AT-07 PASSED on hardware.** Both consecutive rounds
+> green on one boot (`completed`/`lock_confirmed` in 5.2 s and 2.6 s of the
+> 15 s deadline; agent-observed transition; capabilities L3/verified pinned
+> as preconditions; human unlocked between rounds — that in-the-loop step is
+> permanent for AT-07). The user chose the co-located protocol for
+> AT-08/09 (harness freezes with the Mac; human observes/wakes/reports), so
+> both scripts gained phased modes: at08 `--phase
+> {restart-dispatch,restart-verify,sleep-dispatch,sleep-verify,wake}` with a
+> /tmp/at08_state.json chain (post-hoc deadline checks via ledger
+> dispatched_at + device-log state_transition timestamps), at09 `--phase
+> {dispatch,verify}` with printed phone-curl sampling instructions and
+> interactive y/n human-observation recording. 32/32 offline mock checks.
+> Next live steps: AT-09 chain (dispatch → human samples → verify), then the
+> AT-08 chain (restart → sleep → wake), then AT-06/AT-11 regression ×2 on
+> this binary → Phase 5 gate.
+>
+> **2026-09-27 (late night): HID system-sleep is a dead end on modern
+> macOS; power actions move to the agent (protocol v2).** Verified the hard
+> way during AT-09: `Cmd+Alt+Power` only display-sleeps, and a HID System
+> Control Sleep report (which enumerates and macOS parses) is silently
+> ignored — assertions clean, so neither HID mechanism can sleep this Mac.
+> The engine chain itself is PROVEN: a `pmset sleepnow` rehearsal with a
+> live confirming record completed `sleep_confirmed` at window close on
+> budget. Shipped: agent-executed sleep/restart/shutdown (agent v1.2.0,
+> `pmset`/`osascript`, goodbye-with-reason flushed BEFORE acting — the
+> previously-dead restart/shutdown goodbye paths now used), firmware
+> dispatcher routes Mode B power to the agent (HID fallback in Mode A),
+> dispatch envelope `{action, command_id}` for power / `bundle_id` required
+> only for app actions, **PROTOCOL_VERSION 2** (v1 refused, close 4003,
+> both directions — agent must restart when the firmware flips). 146/146
+> native tests. AT-07 stays green-irrelevant (lock is HID, unaffected).
+> NEXT: flash needs the 'com' cable (unplugged again — the JTAG port can't
+> be forced into download mode), then restart the bench agent with
+> `--enable-sleep --enable-restart --enable-shutdown`, then AT-09 ×2,
+> AT-08 chain, AT-07 re-run + AT-06/AT-11 regression ×2 → Phase 5 gate.
+>
+> **2026-09-27 (very late): AT-09 PASSED; v2 live.** Flashed (com cable
+> back; board needed a manual reset out of download mode after flash),
+> agent v1.2.0 up with the three power actions enabled. AT-09: five
+> consecutive chains, all `completed`/`sleep_confirmed` ≤90 s; final chain
+> witnessed from a second computer (expected_offline in-window past the
+> 15 s mark; stale after close; boot_id retained+fresh). Bench MUST have
+> `sudo pmset -a powernap 0` + `sudo pmset -a tcpkeepalive 0` or Power
+> Nap/wake-for-network dark wakes keep agent heartbeats alive during
+> sleep and freshness never degrades (device correct either way). at08/
+> at09 post-hoc deadline bound fixed to match `state_transition` events
+> only. NEXT: AT-08 chain (restart reboots the harness Mac — operator
+> saves work first), then AT-07 re-run + AT-06/AT-11 regression ×2 →
+> Phase 5 gate.
+>
 > **2026-09-24 (late): Phase 5 FOUNDATION complete — host-verified, not
 > flashed.** Verification predicates live: Mode B power/lock/wake/macro
 > commands stay `confirming` and complete on MCA evidence per spec
@@ -103,7 +220,14 @@ Pre-flagged Phase 5 cleanups and watch items:
   retirement during Phase 5 soaks.
 - Agent gaps (README): OS sleep/wake notifications and the full 5-view UI
   are later phases; screen-lock detection needs pyobjc.
-- Bench: S3 device `mac-b53478.local`, port `/dev/cu.usbmodem5CBD0148591`.
+- **Bench renamed:** the S3 answers mDNS as **`control-graphics.local`**
+  (10.10.40.242; identity name "MacControl for Graphics Computer"). The old
+  `mac-b53478.local` name is a stale cache entry that macOS intermittently
+  resolves to a dead/wrong IP — AT agent state files with the old hostname
+  produce endless "hello_ack timeout" retries (the agent logs ANY
+  connect/DNS/upgrade failure that way). Check the agent state file's
+  `hostname` first; see `docs/DEBUG-MDNS-STALE-NAME.md`. UART port
+  `/dev/cu.usbmodem5CBD0148591` (CH343, 'com' cable).
   Re-run the Phase 4 gate any time with the commands in the 2026-09-23
   banner below.
 - **`/api/v1/agent/status` honesty — FIXED in Phase 4.5 (2026-09-23):**

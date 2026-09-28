@@ -478,7 +478,7 @@ void AgentLink::runWsSession(WsOffer offer, uint8_t* buf) {
         JsonDocument ack;
         ack["type"] = "hello_ack";
         ack["session_id"] = sid;
-        ack["protocol_version"] = 1;
+        ack["protocol_version"] = 2;
         ack["heartbeat_interval_s"] = hb_s;
         ack["stale_threshold_s"] = stale_s;
         ack["offline_threshold_s"] = offline_s;
@@ -571,11 +571,19 @@ void AgentLink::runWsSession(WsOffer offer, uint8_t* buf) {
                 if (!d.command_id.empty()) {
                     JsonDocument doc;
                     doc["action"] = d.action;
-                    doc["bundle_id"] = d.bundle_id;
+                    // Power actions carry {action, command_id} only; bundle_id
+                    // is present (and required) for launch_app/quit_app only.
+                    if (!d.bundle_id.empty()) doc["bundle_id"] = d.bundle_id;
                     doc["command_id"] = d.command_id;
                     std::string body;
                     serializeJson(doc, body);
-                    if (!ws::send_text(client, body)) {
+                    if (mcco::validate_dispatch_json(body) != mcco::AgentEventError::Ok) {
+                        // Internal invariant: the dispatcher only enqueues
+                        // closed-set actions; never put a bad frame on the wire.
+                        ctx_->log->write(mcco::LogCategory::Command, mcco::LogLevel::Error,
+                                         "agent_dispatch_invalid", d.command_id.c_str(),
+                                         nullptr, nullptr, nullptr);
+                    } else if (!ws::send_text(client, body)) {
                         teardownSession(mine, "agent_send_failed", 0, true);
                         return;
                     }
@@ -917,7 +925,7 @@ bool AgentLink::pollPending(const std::string& auth_bearer, const std::string& s
             const PendingDispatch& d = pending_.front();
             JsonObject o = arr.add<JsonObject>();
             o["action"] = d.action;
-            o["bundle_id"] = d.bundle_id;
+            if (!d.bundle_id.empty()) o["bundle_id"] = d.bundle_id;
             o["command_id"] = d.command_id;
             pending_.pop_front();
         }

@@ -2,9 +2,10 @@
 
 On-Mac evidence provider for a MacControl endpoint (ESP32-S3). The MCA pairs
 with the endpoint, reports macOS state over WebSocket (or an HTTP polling
-fallback), and executes a closed action set (`launch_app` / `quit_app`) for
-allowlisted applications. It is **optional**: the endpoint remains fully
-functional in Mode A (agentless) without it.
+fallback), and executes a closed action set (`launch_app` / `quit_app` for
+allowlisted applications, plus the power actions `sleep` / `restart` /
+`shutdown` in software) — protocol v2. It is **optional**: the endpoint
+remains fully functional in Mode A (agentless) without it.
 
 See `../maccontrol_spec.agent.final.md` for the normative protocol (chapters
 4, 6, and 9 in particular).
@@ -13,9 +14,58 @@ See `../maccontrol_spec.agent.final.md` for the normative protocol (chapters
 
 Requires macOS with Python 3.9+ (system python3 is fine).
 
-**Recommended: the one-shot installer** (`install.sh`) — creates the venv,
-installs dependencies, optionally pairs with the endpoint, writes your
-configuration, and installs a LaunchAgent so the agent starts at login:
+**One installer (flash + provision + pair + install).** With an ESP32-S3
+connected over USB, a single run flashes the committed firmware bundle
+(`../firmware/dist/esp32-s3`), sets WiFi + API keys + admin password over the
+serial console, discovers the device on the network, opens the pairing
+window, pairs this Mac, and finishes with the normal config + LaunchAgent
+steps:
+
+```sh
+cd agent
+./install.sh --flash --provision \
+    --allow com.apple.Terminal --enable-launch --enable-quit
+```
+
+Endpoint flags (all idempotent — a failed phase says what to fix and re-running
+continues safely):
+
+- `--flash` — flash the firmware bundle to an ESP32-S3, then stop (unless
+  `--provision` is also given). Auto-detects the serial port
+  (`/dev/cu.usbmodem*`, `/dev/cu.wchusbserial*`, `/dev/cu.usbserial*`; pick
+  from a numbered list when several match, override with `--port P`). The
+  board reboots when the port opens — expected.
+- `--provision` — full endpoint setup on an already-flashed board: serial
+  phase (WiFi + keys + admin password), then network phase (discover via
+  mDNS, open the pairing window via the Web UI API, run the agent pairing
+  ceremony, verify the agent session comes up).
+- `--wifi-ssid S` / `--wifi-pass P` / `--admin-password PW` — endpoint
+  credentials (prompted interactively, echo off, when missing; the admin
+  password must be 10+ chars). Secrets are never printed.
+- `--no-keys` — skip API key creation (serial phase does WiFi + admin only).
+- `--re-pair` — required when `~/.maccontrol/agent.json` already holds a
+  pairing token and you want the network phase to replace it.
+
+Prerequisite for the serial phases: the WCH CH34x/CH343 USB-serial driver
+(https://www.wch.cn/downloads/CH341SER_MAC_ZIP.html) — without it no
+`/dev/cu.wchusbserial*` port appears. Flashing/provisioning use `esptool` and
+`pyserial`, installed into `agent/.venv` on demand.
+
+Key output: the three endpoint API keys (READ/CONTROL/ADMIN) are printed
+exactly once at install time, written to `~/.maccontrol/endpoint.keys`
+(chmod 600, `ENDPOINT_HOSTNAME=` + `READ_KEY=`/`CONTROL_KEY=`/`ADMIN_KEY=`),
+and never stored anywhere else. The raw keys are shown once by the device and
+never logged; if the key store is full (8 active), revoke old ones over the
+serial console (`key list` / `key revoke <key_id>`) or use `--no-keys`.
+
+The provisioner itself is `mc_provision.py` (stdlib + pyserial, driven by
+install.sh); its `serial` and `network` subcommands are independently
+runnable for debugging — see `./mc_provision.py --help`.
+
+**Agent-only install** (endpoint already provisioned): the installer creates
+the venv (recreating it automatically if a copied/broken `.venv` is found),
+installs dependencies, optionally pairs, writes your configuration, and
+installs a LaunchAgent so the agent starts at login:
 
 ```sh
 cd agent
@@ -74,7 +124,7 @@ State file: `~/.maccontrol/agent.json` (chmod 600). Keys:
 | `agent_instance_id` | `ag-XXXX`, generated once at first run, persistent |
 | `agent_token` | base64url 32-byte bearer token, returned exactly once at pairing |
 | `allowlist` | bundle IDs permitted for launch/quit/report (empty = deny all) |
-| `enabled_commands` | `{"launch_app": false, "quit_app": false}` — fail-closed defaults |
+| `enabled_commands` | `{"launch_app": false, "quit_app": false, "sleep": false, "restart": false, "shutdown": false}` — fail-closed defaults |
 | `transport` | `websocket` (default) or `polling` |
 | `poll_interval_s` | polling fallback interval, 2–30 (default 5) |
 | `boot_id` / `boot_key` | cached boot identity (`kern.boottime`-derived) |
@@ -90,6 +140,9 @@ CLI flags (persisted to the state file where applicable):
 --allow BUNDLE_ID ...   replace the application allowlist
 --enable-launch         enable the launch_app action
 --enable-quit           enable the quit_app action
+--enable-sleep          enable the sleep power action (pmset sleepnow)
+--enable-restart        enable the restart power action (osascript System Events)
+--enable-shutdown       enable the shutdown power action (osascript System Events)
 --state-file PATH       alternate state file location
 --headless              no UI; requires prior pairing or --pair-code
 --show-log              print the recent log (~/.maccontrol/agent.log) and exit
@@ -124,6 +177,12 @@ falling back to sparse `mdfind`/`pgrep` polling only when psutil is missing.
   session with `seq` reset. During a declared expected-offline window
   (agent_goodbye for sleep/restart/shutdown) the agent holds reconnects until
   `close_after_s` (default 60 s).
+  **Caution:** the retry loop logs *any* failure between socket open and
+  hello_ack — DNS errors, connect timeouts, upgrade hangs — as
+  `hello_ack timeout; backing off`; only an HTTP-status refusal gets its own
+  message. Seeing that line on every attempt means "check name resolution
+  and TCP reachability first" (a stale mDNS hostname after a device rename
+  produces exactly this; see `firmware/docs/DEBUG-MDNS-STALE-NAME.md`).
 - **Polling** (`--transport polling`): `POST /agent/v1/events` with the
   identical envelope (first `agent_hello` returns `session_id`; every
   subsequent request carries `X-Session-Id`) and
@@ -132,7 +191,7 @@ falling back to sparse `mdfind`/`pgrep` polling only when psutil is missing.
   `409 agent_offline` → open a new session, `400 validation_failed` → backoff.
   Switching transports mid-session is prohibited; a switch starts a new session.
 
-## Phase 4.5 scope / known gaps
+## Endpoint-side scope / known gaps (Phase 4.5 + Phase 5)
 
 - **Sleep/wake detection (Phase 4.5, IOKit rewrite 2026-09-23)**: power.py
   registers for IOKit system power notifications via ctypes
@@ -170,6 +229,49 @@ falling back to sparse `mdfind`/`pgrep` polling only when psutil is missing.
   `mdfind`/`pgrep` polling (misses are possible). Install
   `pyobjc-framework-Quartz` / `pyobjc-framework-Cocoa` (and `psutil`) into
   the venv for the full experience.
+- **Agent-executed power actions (protocol v2, 2026-09-27)**: `sleep`,
+  `restart`, and `shutdown` are executed by the agent in software — modern
+  macOS ignores USB-HID system-sleep/power chords (a HID System Control
+  report enumerates and parses but is ignored; the old Cmd+Alt+Power chord
+  only display-sleeps). Commands are `pmset sleepnow` (sleep) and
+  `osascript -e 'tell application "System Events" to restart|shut down'`
+  (restart/shutdown), each fail-closed behind its `enabled_commands` flag
+  (`--enable-sleep` / `--enable-restart` / `--enable-shutdown`, default off)
+  and a subprocess timeout. Wake and lock stay on the HID path — both proven
+  against a real Mac. Ordering inside the power handler is fixed:
+  (1) `command_ack`; (2) `command_result(ok)` best-effort — reported BEFORE
+  acting because the power transition may kill the process, and safe because
+  `command_result(ok)` never completes an endpoint record (only evidence
+  does); (3) the expected-offline `agent_goodbye{reason}` with the matching
+  reason (`sleep`/`restart`/`shutdown`), flushed ahead of the power command
+  via the transport's outbox join (WebSocket) / synchronous event-POST drain
+  (polling); (4) execution. Residual risk: restart/shutdown may outrun the
+  flush — the host can halt before the peer reads the goodbye frame. That is
+  acceptable: the endpoint's evidence channel also sees the TCP close, which
+  qualifies the same expected-offline window, so the record completes from
+  window evidence either way; the declared reason simply makes the window
+  deterministic when the flush lands. If initiation fails (host stays up,
+  nonzero rc) a superseding `command_result(failed, action_timeout)` is sent.
+  Power dispatches carry `{action, command_id}` only — no `bundle_id` — and
+  the allowlist does not apply to them.
+- **Endpoint Phase 5 (2026-09-27, firmware-side — no agent changes needed)**:
+  the endpoint now *verifies* power/lock/wake and `expected_event` macros in
+  Mode B using ambient frames the MCA already emits — `screen_lock_changed`
+  (lock), new-session `agent_hello` boot_id + `system_state_changed{awake}`
+  (wake, restart), in-window offline + silence through window close (sleep),
+  in-window offline + ICMP-unreachability corroboration (shutdown), and the
+  five ambient event types (macros). Records terminate
+  `completed`/`*_confirmed` or the honest negatives `unexpected_wake` /
+  `unexpected_reconnect` / `host_still_reachable`; terminal records are never
+  reopened by later contradictory events. Two known asymmetries, both
+  acceptable to the protocol: (1) the agent cannot distinguish a *commanded*
+  sleep from a user-initiated sleep — both declare `reason: "sleep"` (a
+  pending-command marker in the agent is optional future hardening); (2)
+  pre-v2 the `restart`/`shutdown` goodbye reasons were never emitted — with
+  protocol v2 the agent declares them before executing a commanded
+  restart/shutdown, making the expected-offline window deterministic (the
+  boot_id-based verification remains as the fallback when the goodbye flush
+  is outrun).
 - **MCA UI is minimal** (status + code entry + log view). The full 5-view UI
   of spec chapter 14 is a later phase; command enablement and the allowlist
   are currently CLI/state-file only.

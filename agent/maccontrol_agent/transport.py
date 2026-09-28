@@ -78,8 +78,17 @@ class WSTransport:
                 if rt.stop_event.is_set():
                     return
                 continue
-            envelope = rt.factory.next_event(item.etype, item.payload, item.command_id)
-            await ws.send(json.dumps(envelope, separators=(",", ":")))
+            # task_done in finally (not just on success): outbox.join() must
+            # not hang when a frame fails — the session tears down anyway.
+            try:
+                envelope = rt.factory.next_event(item.etype, item.payload, item.command_id)
+                await ws.send(json.dumps(envelope, separators=(",", ":")))
+            finally:
+                rt.outbox.task_done()
+
+    async def _flush_outbox(self):
+        """Returns once every frame enqueued so far has left the socket."""
+        await self.rt.outbox.join()
 
     async def _receiver(self, ws):
         rt = self.rt
@@ -100,6 +109,7 @@ class WSTransport:
         sender = asyncio.ensure_future(self._sender(ws))
         receiver = asyncio.ensure_future(self._receiver(ws))
         stopper = asyncio.ensure_future(rt.stop_event.wait())
+        rt.flush_now = self._flush_outbox
         try:
             done, pending = await asyncio.wait(
                 {sender, receiver, stopper}, return_when=asyncio.FIRST_COMPLETED)
@@ -117,6 +127,7 @@ class WSTransport:
                                      return_exceptions=True)
             except Exception:
                 pass
+            rt.flush_now = None
         # Grace period so a queued agent_goodbye flushes before close.
         try:
             while not self.rt.outbox.empty():

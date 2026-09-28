@@ -126,22 +126,64 @@ deadlines) — changing them would invalidate AT-06…AT-12 (PRD §17.2.1).
 - Unknown restart baseline (never saw a boot_id): a hello voids phase 1 —
   the honest reading of §8.2.1's "identity-unchanged reconnect voids".
 
+## Acceptance status (live)
+
+- **AT-07 verified lock — PASSED 2026-09-27**, both consecutive rounds on
+  one boot: `completed`/`lock_confirmed` 5.2 s and 2.6 s into the 15 s
+  deadline, agent-observed `screen_lock_changed`, L3/verified preconditions
+  pinned, human unlock between rounds (permanent in-the-loop step).
+- **Sleep chain validated 2026-09-27 (rehearsal):** a live confirming sleep
+  record completed `sleep_confirmed` at window close when the Mac was put
+  to sleep by `pmset sleepnow` — window logic, declared-offline evidence,
+  and the 90 s budget all correct on hardware.
+- **Deviation (spec amendment, OpenAPI note updated):** HID cannot perform
+  system sleep on modern macOS (display-sleep chord; System Control report
+  ignored) — power actions are agent-executed in Mode B (protocol v2,
+  goodbye-before-act), HID fallback only in Mode A. Wake/lock stay HID.
+- **AT-09 expected-offline provenance — PASSED 2026-09-27.** Five
+  consecutive chains on the v2 firmware, all `completed`/`sleep_confirmed`
+  within the 90 s budget; final chain witnessed live from a second
+  computer: in-window sample (+19 s, past the 15 s mark) showed
+  `expected_offline` on every agent tuple with `connection.agent`
+  false/`expected_offline` and `boot_id` retained; post-window sample
+  (+89 s) showed `stale` with `boot_id` retained + `fresh`. Human-in-the-
+  loop protocol (at09 `--phase {dispatch,verify}`) worked as designed.
+  **Bench requirement discovered:** `sudo pmset -a powernap 0` AND
+  `sudo pmset -a tcpkeepalive 0` — Power Nap/wake-for-network dark wakes
+  otherwise keep agent heartbeats flowing during sleep and freshness
+  never degrades (the device is *correct* either way; the AT assumption
+  of a dead-silent host is what breaks). Also fixed: the post-hoc
+  deadline bound in at08/at09 now matches `state_transition` log events
+  only (post-terminal evidence notes like `unexpected_wake` carry the
+  command_id and had inflated the bound past the deadline).
+
 ## Verification status
 
 - `./.venv/bin/pio test -e native`: **144/144 green.**
 - `pio run -e esp32-s3-devkitc-1` and `-e esp32-wroom-32`: both compile.
-- **Not flashed.** First flash procedure (bench-dependent): rewire 5 V PSU
-  (bus-powered board dies with the host's USB — see HANDOFF landmines),
-  confirm a manual sleep/wake cycle keeps the board alive and watch
-  `usb_link` events, flash, then AT-06 + AT-11 regression (twice
-  consecutive) before authoring AT-07/08/09 against the separate target
-  Mac.
+- **Flashed to the bench S3 on 2026-09-27 and verified on hardware**
+  (UART upload, app partition only — NVS/LittleFS pairing/keys intact).
+  Boot clean (`reset: poweron`), reconciliation 901 ms / 148 records,
+  HTTP + auth + Web UI serving. With the paired MCA connected:
+  capabilities render **mode B / L3 with all eight commands
+  available+verified**, agent/status live with boot_id, status tuples
+  fresh. Only item not hardware-verified: mc_http stack HWM after the
+  40→28 KB trim — the `[heap]` ring entries store empty detail by design,
+  so it needs a serial soak (sanctioned session) to read. Agent-side
+  reconnect debugging surfaced a bench rename gotcha (stale
+  `mac-b53478.local`), not a firmware fault —
+  `docs/DEBUG-MDNS-STALE-NAME.md`. AT-06/AT-11 regression on this binary
+  is owed before AT-07/08/09 authoring.
 
 ## What remains for Phase 5 (next batches)
 
-1. **AT-07/08/09 scripts** (scripts/at07.py … at09.py) following the
-   at06/at11 idioms; AT-08 needs the target Mac + harness-host split (the
-   harness must survive the target's restart).
+1. **AT-07/08/09 scripts — AUTHORED 2026-09-27** (`scripts/at07.py`,
+   `at08.py`, `at09.py`, at11 idioms, two-consecutive-rounds each,
+   py_compile/`--help` verified, NOT yet run against hardware). Remaining:
+   the topology decision (see HANDOFF 2026-09-27: the HID cable attaches to
+   the harness Mac itself, so sleep/restart ATs need either a second Mac or
+   a post-hoc + `pmset` scheduled-wake test mode), then the AT-06/AT-11
+   regression on the Phase 5 binary, then the live runs.
 2. **Agent batch decision**: the PRD predicates are device-observed, so
    AT-07/08/09 pass without agent changes; the optional hardening items are
    the pending-command mark (commanded vs user sleep), dead
