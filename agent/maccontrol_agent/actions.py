@@ -26,6 +26,13 @@ POWER_COMMANDS = {
     "shutdown": ["osascript", "-e",
                  'tell application "System Events" to shut down'],
 }
+# Sleep onset on hosts holding "Powerd - Prevent sleep while display is on"
+# (observed 2026-09-28 on an Apple-Silicon desktop: pmset sleepnow ACKed at
+# t=0 but the system actually slept 45-60 s later, after assertion timeouts)
+# is dominated by that assertion. Display-sleep first drops it: the
+# subsequent sleepnow then takes effect in seconds. Best-effort: a
+# displaysleepnow failure must not block the system sleep.
+SLEEP_PRELUDE = ["pmset", "displaysleepnow"]
 
 
 def _send_result(rt, command_id, outcome, error_code=None):
@@ -178,6 +185,10 @@ async def _power(rt, command_id, action):
         except Exception as exc:
             rt.log("pre-%s flush incomplete (%s); proceeding anyway"
                    % (action, exc))
+    if action == "sleep":
+        # See SLEEP_PRELUDE: drop the display-on sleep assertion first so
+        # sleepnow takes effect in seconds instead of the assertion timeout.
+        await _run(SLEEP_PRELUDE, rt)
     rc, timed_out = await _run(POWER_COMMANDS[action], rt)
     if timed_out:
         # The host is (presumably) still up but the initiation wedged; no

@@ -24,6 +24,18 @@ public:
     // Full compaction rewrite (used after FIFO eviction). Must be atomic
     // against power loss as far as the platform allows: write-then-commit.
     virtual bool replace_all(const std::vector<std::string>& lines) = 0;
+    // Streaming compaction: rewrite the durable stream keeping only lines
+    // where keep(line) is true. Default materializes via read_all +
+    // replace_all (host/tests); flash backends MUST override with an
+    // O(1)-heap temp-file copy — compact() at device scale (hundreds of KB)
+    // OOMs with the default (bad_alloc panic, 2026-09-29).
+    virtual bool rewrite_filtered(const std::function<bool(const std::string& line)>& keep) {
+        std::vector<std::string> lines;
+        read_all([&](const std::string& line) {
+            if (keep(line)) lines.push_back(line);
+        });
+        return replace_all(lines);
+    }
 };
 
 // Flash-backed append-only command ledger (spec 5.1.1). Records are never
@@ -48,6 +60,20 @@ public:
     // All commands, newest acceptance first, for listing endpoints.
     std::vector<const CommandRecord*> list_newest_first() const;
 
+    // Newest-first access by back-index, for mutation-safe iteration in the
+    // engine: safe to call append_revision() (hence eviction) between calls
+    // — a back-index keeps pointing at the same entry under fifo
+    // push_back/pop_front, and entries erased by eviction simply drop out
+    // (the caller's count runs past the shrunken fifo and the loop ends).
+    // Hot paths (per-hello, per-tick) must use this instead of
+    // list_newest_first(): that snapshot allocates O(commands) heap per
+    // call, and bad_alloc there panics the device under reconnect churn
+    // (observed 2026-09-29: ~9 s panic loop, backtrace handle_hello).
+    const CommandRecord* newest_from_back(size_t k) const {
+        if (k >= fifo_.size()) return nullptr;
+        return latest(fifo_[fifo_.size() - 1 - k]);
+    }
+
     size_t command_count() const { return entries_.size(); }
     size_t capacity() const { return capacity_; }
 
@@ -63,7 +89,12 @@ private:
     };
 
     bool persist_revision(const CommandRecord& rec);
-    void evict_oldest();
+    // `run_compact` false lets batch callers (load-time trim) defer the
+    // expensive full-file compact() until the last eviction — one rewrite
+    // of the ledger file instead of one per evicted record (a 150+ record
+    // boot trim would otherwise rewrite the file 150+ times and starve the
+    // task watchdog mid-setup).
+    void evict_oldest(bool run_compact = true);
     void compact();
 
     ILedgerStorage& storage_;

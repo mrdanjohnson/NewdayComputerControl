@@ -37,7 +37,12 @@ EspClock g_clock;
 EspRandom g_rng;
 RamLogSink g_log(g_config, g_clock);
 FsLedgerStorage g_ledger_storage;
-mcco::Ledger g_ledger(g_ledger_storage, g_clock, g_log);
+// 320 KB RAM, no PSRAM (see AGENTS.md / DEBUG-PHASE4-AT11.md): the spec
+// default capacity (256 distinct commands) leaves the ledger RAM mirror
+// (~350-450 B per record) eating most of the heap. 128 matches the log
+// ring's hardware-driven downsize and keeps ~50 KB of headroom; the spec
+// range is 64-1024 so this is an in-range HW amendment (mc_openapi.cpp).
+mcco::Ledger g_ledger(g_ledger_storage, g_clock, g_log, 128);
 mcco::CommandEngine g_engine(g_ledger, g_clock, g_rng, g_log);
 mcco::KeyStore g_keys;
 mcco::RateLimiter g_limiter(g_clock);
@@ -413,6 +418,30 @@ void loop() {
     } catch (...) {
         g_log.write(mcco::LogCategory::System, mcco::LogLevel::Error,
                     "persist_failed", nullptr, nullptr, nullptr, nullptr);
+    }
+
+    // USB re-enumeration supervisor (~1 s cadence): hosts that power-cycle
+    // the USB port in sleep sometimes leave the device un-enumerated after
+    // wake; the agent session being live proves the host is awake, so a
+    // persistent missing mount is a re-enumeration failure the firmware can
+    // repair itself (force disconnect/connect, logged as usb_reenumerate).
+    // An open agent_goodbye expected-offline window (spec 7.2.2) suppresses
+    // it: reconnecting a sleeping host dark-wakes it and defeats the sleep.
+    static uint32_t last_usb_reconn_ms = 0;
+    if (millis() - last_usb_reconn_ms >= 1000) {
+        last_usb_reconn_ms = millis();
+        bool declared_offline = false;
+        if (ctx.status_cache) {
+            const mcco::AgentStatus as = ctx.status_cache->snapshotAgent();
+            declared_offline =
+                as.declared_offline_until > ctx.clock->epoch_seconds();
+        }
+        if (g_hid.serviceHostReconnect(ctx.agent_link &&
+                                           ctx.agent_link->sessionActive(),
+                                       declared_offline)) {
+            g_log.write(mcco::LogCategory::System, mcco::LogLevel::Warn,
+                        "usb_reenumerate", nullptr, nullptr, nullptr, nullptr);
+        }
     }
 
     // Heap watermark telemetry: under AT poll load the device rebooted with

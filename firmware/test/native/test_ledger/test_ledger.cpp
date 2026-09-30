@@ -307,6 +307,38 @@ TEST(Ledger, BootReloadPreservesCommandsAndStates) {
     EXPECT_EQ(lb->state, mcco::CommandState::Accepted);
 }
 
+TEST(Ledger, BootReloadTrimsMirrorToCapacity) {
+    // The durable stream is append-only and grows forever; a ledger file
+    // written by a higher-capacity device (or a long-lived one whose flash
+    // compacts silently failed) must not inflate the RAM mirror past
+    // capacity at boot (S3 heap landmine: the 2026-09-29 bad_alloc panic
+    // loop). Eviction at load keeps the newest `capacity` commands, same as
+    // runtime eviction (spec 5.1.1).
+    FakeClock clock;
+    MemStorage storage;
+    mcco::NullLog log;
+    // Writer at the spec-max capacity, no eviction at 100 commands.
+    {
+        mcco::Ledger writer(storage, clock, log, 256);
+        for (int i = 0; i < 100; i++) {
+            char id[16];
+            snprintf(id, sizeof(id), "cmd-%03d", i);
+            mcco::CommandRecord rec = make_rec(id, mcco::CommandState::Accepted);
+            ASSERT_TRUE(writer.append_revision(rec));
+        }
+        ASSERT_EQ(writer.command_count(), 100);
+    }
+    // Reload at 64 (the shipped minimum): mirror must trim to capacity.
+    mcco::Ledger reloaded(storage, clock, log, 64);
+    ASSERT_TRUE(reloaded.load());
+    EXPECT_EQ(reloaded.command_count(), 64);
+    // Newest survivors present, oldest evicted.
+    EXPECT_NE(reloaded.latest("cmd-099"), nullptr);
+    EXPECT_NE(reloaded.latest("cmd-036"), nullptr);
+    EXPECT_EQ(reloaded.latest("cmd-000"), nullptr);
+    EXPECT_EQ(reloaded.latest("cmd-035"), nullptr);
+}
+
 TEST(Ledger, BootReloadSkipsCorruptLines) {
     FakeClock clock;
     MemStorage storage;

@@ -88,6 +88,9 @@ SAMPLE1_AT_S = 20.0       # past the stale mark, inside the window
 SAMPLE2_AT_S = 70.0       # window closed
 SLEEP_DEADLINE_S = 90.0
 WAKE_WAIT_S = 120.0
+# Past macOS's post-wake "PM configd - Wait for Device enumeration" hold
+# (~45 s, observed 2026-09-28) before dispatching the next sleep.
+SETTLE_AFTER_WAKE_S = 55.0
 
 POLL_STATUS_S = 2.0
 BACKOFF_429_S = 5.0
@@ -221,6 +224,15 @@ def run_round(checker, base, read_key, control_key, rnd):
     if not baseline_boot:
         return
 
+    # macOS holds "PM configd - Wait for Device enumeration" for ~45 s after
+    # every wake/reboot (observed 2026-09-28 via pmset -g assertions/log): a
+    # sleep dispatched inside that window sits until the assertion times out
+    # (sleep onset measured 4 s -> 22 s -> 46+ s when wake/sleep cycles were
+    # closely spaced). Settle past the hold before dispatching.
+    print(f"  ... settling {SETTLE_AFTER_WAKE_S:.0f} s past the post-wake "
+          "device-enumeration hold before dispatching sleep")
+    time.sleep(SETTLE_AFTER_WAKE_S)
+
     checker.section(f"Round {rnd}: dispatch sleep, wait for the declared goodbye")
     command_id = dispatch_system(checker, base, control_key, "sleep")
     if not command_id:
@@ -229,16 +241,20 @@ def run_round(checker, base, read_key, control_key, rnd):
     print(f"  ... sleep dispatched at t=0 (command_id={command_id})")
     # The window opens at the GOODBYE, not at dispatch (spec 7.2.2), so the
     # sampling clock needs the goodbye: observable as agent/status going
-    # offline. Worked example 3 has it at ~t=4 s; if it is not observable by
-    # ~t=15 s the Mac did not sleep and the scenario cannot run.
+    # offline. Worked example 3 has it at ~t=4 s; production targets can
+    # defer the actual sleep well past the goodbye (pmset ACKs immediately,
+    # powerd enforces assertions first — onset 4-60 s observed 2026-09-28;
+    # the agent's displaysleepnow prelude targets the dominant display-on
+    # hold). Allow ~80 s: bounded by the record deadline (90 s), and the
+    # window/sampling clocks anchor on the OBSERVED offline either way.
     t_offline = None
-    while time.monotonic() - t_disp < 20.0:
+    while time.monotonic() - t_disp < 80.0:
         st = agent_status(base, read_key)
         if st is not None and st.get("session_active") is False:
             t_offline = time.monotonic() - t_disp
             break
         time.sleep(POLL_STATUS_S)
-    checker.check("declared goodbye observable (session offline by ~20 s)",
+    checker.check("declared goodbye observable (session offline by ~80 s)",
                   t_offline is not None,
                   "agent/status stayed online; the target did not sleep")
     if t_offline is None:
@@ -313,9 +329,18 @@ def run_round(checker, base, read_key, control_key, rnd):
 
     # Cleanup: wake the target back up. The wake RECORD belongs to AT-08 —
     # here we only wait for the session to return (informational).
+    # Wake ACTUATION is host-dependent: hosts that power-manage USB
+    # aggressively (Apple Silicon desktop observed 2026-09-28) power the
+    # port OFF in sleep — the endpoint deconfigures (wake_debug sus=0,
+    # sent_ok=0) and HID remote wakeup has nothing to signal. A human
+    # keypress is the fallback actuation; the wake record completes from
+    # the new-session hello either way.
     checker.section(f"Round {rnd}: cleanup wake (record not asserted here — AT-08)")
     wake_id = dispatch_system(checker, base, control_key, "wake")
     if wake_id:
+        ask_human("If the target does not wake by itself within ~10 s, press "
+                  "any key on it (USB port powered off in sleep = HID wake "
+                  "impossible on that host). Ready?")
         elapsed, st = wait_session(base, read_key, True, WAKE_WAIT_S)
         awake = (st or {}).get("system") or {}
         if elapsed is not None and awake.get("state") == "awake":
@@ -491,12 +516,12 @@ def phase_dispatch(checker, args, base):
     curl = curl_status_command(args, base)
 
     print("\n" + "=" * 72)
-    print("  HUMAN OBSERVATION PROTOCOL — read BEFORE the Mac sleeps:
+    print("""  HUMAN OBSERVATION PROTOCOL — read BEFORE the Mac sleeps:
   0. Bench setup (once): `sudo pmset -a powernap 0` and
      `sudo pmset -a tcpkeepalive 0` — otherwise Power Nap /
      wake-for-network dark wakes keep the agent's heartbeats flowing
      during sleep and the freshness transitions never render (verified
-     2026-09-27).")
+     2026-09-27).""")
     print(f"  1. This Mac will SLEEP in ~2 s. The harness dies with it.")
     print(f"  2. FROM ANOTHER DEVICE on the same Wi-Fi (phone/tablet), at")
     print(f"     {fmt_wall(sample1_at)} (+20 s) run this exact command (or open")

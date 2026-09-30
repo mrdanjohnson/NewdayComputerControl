@@ -466,7 +466,10 @@ def main():
     checker = Checker()
     base = f"http://{args.hostname}:80"
 
-    # Preconditions: paired state file, daemon running (start if not).
+    # Preconditions: paired state file, exactly ONE daemon running. Strays
+    # from earlier AT-06 runs share this state file's pairing token, and two
+    # same-token daemons supersede each other's sessions mid-dispatch
+    # (agent_superseded/1000) — kill everything and start one fresh process.
     checker.section("AT-11 preconditions")
     try:
         with open(args.state_file, "r", encoding="utf-8") as fh:
@@ -477,11 +480,10 @@ def main():
         return 1
     checker.check("paired state file exists", bool(state.get("agent_token")))
 
-    if daemon_alive():
-        print(f"  ... MCA daemon already running (pid {_pid_from_file()}); reusing")
-    else:
-        start_agent_daemon(args.hostname, args.state_file, args.bundle_id,
-                           transport="websocket")
+    subprocess.run(["pkill", "-f", "maccontrol_agent"], capture_output=True)
+    time.sleep(1.0)
+    start_agent_daemon(args.hostname, args.state_file, args.bundle_id,
+                       transport="websocket")
     elapsed, doc = wait_connected(base, args.read_key, 20)
     checker.check("agent connected at start (within 20 s)", elapsed is not None,
                   f"agent={doc.get('agent') if isinstance(doc, dict) else doc}")

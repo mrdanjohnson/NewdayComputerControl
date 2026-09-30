@@ -67,9 +67,14 @@ class TkUI:
         try:
             import tkinter as tk
         except ImportError:
-            code = pair_code_via_osascript()
-            if code:
-                self.pair_callback(code)
+            # osascript fallback: prompt only when actually unpaired — a
+            # paired agent that keeps restarting (e.g. protocol_mismatch
+            # halt loop) must not spam the code dialog on every launchd
+            # respawn.
+            if not self.rt.state.paired:
+                code = pair_code_via_osascript()
+                if code:
+                    self.pair_callback(code)
             return
         root = tk.Tk()
         root.title("MacControl Agent")

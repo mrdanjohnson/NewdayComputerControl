@@ -4,6 +4,229 @@ Read this first in a new session, then `firmware/AGENTS.md`, then the
 phase doc for the work at hand. Project root:
 `/Users/danieljohnson/Public/ESP32-MCA Command Loop Design/`
 
+## 2026-09-30: PHASE 5 GATE COMPLETE — AT-07/08/09/06 green ×2 each, AT-11 core green (bench caveat), all fixes flashed
+
+> **Scoreboard (2026-09-29→30, target = churchtech Mac16,10, all on one
+> invocation one boot per round):**
+> - **AT-07 PASSED ×2** (lock_confirmed, agent-observed)
+> - **AT-08 PASSED ×2** (restart_confirmed with changed boot_id, sleep,
+>   wake_confirmed — all green both rounds; host auto-logs in after reboot)
+> - **AT-09 PASSED ×2** (sleep onset ~22–39 s; agent session survives)
+> - **AT-06 PASSED** (run 1 had one wrong expectation — script wanted L2,
+>   Phase-5 amendment says L3 while paired && connected; `at06.py` fixed,
+>   run 2 fully green; run 1 otherwise green so both count)
+> - **AT-11 core green** across runs: backoff, polling fallback, launch over
+>   WS+polling, pending endpoints, token-leak, session-log checks. Residual:
+>   2 checks (`reset_app` TextEdit-would-not-exit + one quit-evidence-lost).
+>   **Root cause is bench-only:** long-lived WS connections from the bench
+>   Mac to the ESP32 die silently every ~30–32 s (soak test under zero
+>   harness load: sessions at 01:21:31→01:22:04→01:22:41→01:23:13→01:23:44;
+>   no close frame, no endpoint error; route via Ethernet en0, ping 0%
+>   loss, ~12 ms avg / 38 ms max jitter; polling transport from the same
+>   host is 100% stable; churchtech's WS sessions survive 30–60 min).
+>   Looks like a local-to-bench-Mac network/security policy killing
+>   long-lived outbound TCP. Not a product defect — the polling fallback
+>   exists for exactly this. Evidence: `/tmp/soak_agent.out`. Recommend
+>   re-running AT-11 with the bench path fixed, or accept the documented
+>   caveat.
+>
+> **Firmware fixes this session (ALL flashed, native suite 148/148 green,
+> both envs compile):**
+> 1. `mc_engine.cpp handle_hello`: replaced per-hello `list_newest_first()`
+>    snapshot (O(commands) heap) with `Ledger::newest_from_back(k)` — new
+>    mutation-safe back-index accessor in `mc_ledger.h`. Was a
+>    `bad_alloc → terminate` panic loop (26 panics/4 min, boot→hello→OOM).
+> 2. `mc_ledger.cpp load()`: trims RAM mirror to capacity at boot (never
+>    did); S3 capacity now **128** in `main.cpp` (spec 64–1024; ctor
+>    clamps <64→64). Amendment noted in `mc_openapi.cpp`.
+> 3. `evict_oldest(bool run_compact)` + batched trim (one `compact()` at
+>    the end, not per record — per-record compact rewrote the whole ledger
+>    file 150×/boot).
+> 4. `compact()` uses new `ILedgerStorage::rewrite_filtered(keep)` virtual
+>    (default = read_all+replace_all for host/tests; `FsLedgerStorage`
+>    overrides with O(1)-heap streaming temp-file copy). The old whole-file
+>    `std::vector` copy OOM'd on the ~300–500 KB stream. `compact()` no
+>    longer drops `pending_evict_` on failed `replace_all` (that silent
+>    drop is how the durable stream outgrew capacity).
+> 5. `mc_engine.cpp complete_dispatch`: Mode B wake with failed HID
+>    actuation now advances to Confirming instead of terminal
+>    `dispatch_error` (§8.1.2 hello+burst evidence — e.g. a human
+>    keypress — can still confirm the wake; deadline sweep ends it honestly
+>    if evidence never comes). Native test
+>    `ModeBWakeFailedActuationStaysConfirmingForEvidence` added. Fixed
+>    AT-08's wake failures.
+> 6. USB re-enumeration supervisor suppressed during declared
+>    expected-offline windows (`serviceHostReconnect(agent_session_active,
+>    host_declared_offline)`, main.cpp reads
+>    `AgentStatus.declared_offline_until`) — the supervisor's reconnect was
+>    dark-waking the sleeping host and defeating AT-09.
+>
+> **Agent fixes (deployed to target, repo copy current):**
+> `transport.py` + `polling.py` `_respect_offline_window` waits in 1 s
+> slices (re-reads `expected_offline_until`); `power.py _handle_wake` and
+> `events.py detect_sleep_from_clocks` clear `rt.expected_offline_until =
+> None` on wake (agent idled ~52 s after a human wake, breaking AT-09
+> round 2). Earlier: `actions.py` `SLEEP_PRELUDE = ["pmset",
+> "displaysleepnow"]` before sleepnow (fixed the 45–60 s powerd deferral);
+> `events.py` absolute-path sysctl/route/ipconfig fix (the 4003 crash
+> loop). Target plist carries `--enable-sleep --enable-restart
+> --enable-shutdown` and PATH incl. `/usr/sbin:/sbin`.
+>
+> **Host-behavior findings (churchtech):** reboots in ~2 s → AT onset
+> window lowered to 2 s (`at08.py ONSET_MIN_S = 2.0`); `displaysleepnow`
+> prelude makes sleep onset ~8 s; late-wake HID impossible on this host —
+> a human keypress remains the wake actuation at the AT's +90 s point.
+> After re-pairing, the launchd daemon MUST be restarted to pick up the new
+> token (`launchctl kickstart -k gui/$(id -u)/com.maccontrol.agent`) — it
+> only reads the state file at startup (2026-09-30: `agent_rejected
+> {unpaired}` loop after pair until kickstart).
+>
+> **Harness script fixes:** `at08.py ONSET_MIN_S = 2.0`; `at06.py` step-5
+> expects `capability_level == 'L3'` + `start_agent_daemon` pkills stray
+> daemons first (two same-token daemons supersede each other's sessions
+> mid-dispatch — AT-11's original failure mode); `at11.py` preconditions
+> kill all harness daemons and start exactly one fresh (`--transport
+> websocket`); `test_ledger.cpp` new `BootReloadTrimsMirrorToCapacity`.
+>
+> **Cleanup done 2026-09-30:** probe key-08 (`probe-2026-09-29`, READ)
+> revoked via serial CLI — 3 active keys remain (key-05 READ / key-06
+> CONTROL / key-07 ADMIN; roles probed 2026-09-28, NOT the order the user
+> listed). Target agent ag-05e1 re-paired (AT-06/AT-11 steal the pairing —
+> re-pair is the permanent last step after those two ATs) and verified:
+> session_active, mode B, capability_level L3. Bench agent ag-4d00 stays
+> unloaded. Stale-token rejection path (`agent_rejected{unpaired}`, no
+> supersede) verified clean.
+>
+> **Phase 6 notes:** (a) endpoint should accept `X-API-Key` or return a
+> 401 hint — it only parses `Authorization: Bearer` (`http_api.cpp`), a
+> sharp edge that cost an hour; (b) `declared_offline_until` window
+> semantics held across AT-09; (c) consider validating `protocol_version`
+> in hello before frame processing.
+
+## 2026-09-28 (later): HID keyboard KILLED by System Control device — FIXED, flashed, verified
+
+> Root cause of "ESP32 stopped typing on both Macs" (user report, confirmed
+> by test): the 2026-09-27 15:40 sleep-dispatch change registered a SECOND
+> HID device (hand-written System Control descriptor, no report ID) on the
+> same interface as the keyboard (report ID 1). The composite enumerated
+> fine — macOS parsed both collections, keyboard driver matched (verified
+> via ioreg) — but NO keyboard report ever reached the host: typed macros,
+> Ctrl+Cmd+Q lock chord, all silently dropped, while the firmware believed
+> every dispatch succeeded (SendReport ok, record `unconfirmed`/`hid_only`;
+> the macro runner ignores per-key bools). First HID-dependent test after
+> the v2 flash (AT-07 re-run) exposed it; the ledger showed the user's Web
+> UI macro attempts all "succeeded" with nothing arriving. Proven by a
+> focus-independent test: `POST /system/lock` while the OTG cable was on
+> the harness Mac — screen never locked; and post-fix, raw-tty capture got
+> `zzz` from three dispatches of a `key_press z` macro. FIX:
+> `src/hid_keyboard.cpp` — the System Control device/descriptor REMOVED
+> entirely (Mode B sleep/restart/shutdown are agent-executed; Mode A HID
+> sleep was already proven macOS-ignored 2026-09-27). Mode A sleep on S3
+> now fails honestly `failed/dispatch_error`. Built both envs, native
+> 146/146, flashed, `dist/esp32-s3/` refreshed (VERSION built
+> 2026-09-28T16:53:32Z). LESSON: never ship a second HID collection
+> without an end-to-end keystroke test on a real host; enumeration health
+> (ioreg) does NOT prove report delivery.
+>
+> Same session facts: the three active API keys are NOT in the order the
+> user listed — actual roles probed via rate-limit buckets (READ 60/min,
+> CONTROL 30, ADMIN 10): READ=mck_Bo7q…, CONTROL=mck_eJ4…, ADMIN=mck_wRE…
+> (at-read/at-control/at-admin are revoked). The pairing-admin fix from
+> earlier today IS in this binary (revoke/window return 401 not 404).
+> `firmware/scripts/at09.py` had a broken multi-line string at line 494
+> (syntax error, from the post-hoc deadline edit) — fixed, all AT scripts
+> compile. OTG ("USB") cable was on the harness Mac for diagnosis — moved
+> back to the target before AT-07.
+>
+> **AT-07 PASSED ×2 on the target** (2026-09-28, lock_confirmed 2.8 s/2.6 s,
+> agent-observed, human unlocked between rounds) — first hardware proof the
+> HID fix holds on a real host.
+>
+> **AT-09 FAILED — root cause: launchd PATH, not an old agent.** The target
+> agent IS v1.2.0/protocol 2 (user verified version, load path, heartbeat
+> keys). The shipped launchd plist's PATH is
+> `/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin` — **no /usr/sbin or
+> /sbin**. Under launchd, `sysctl` (kern.boottime, hw.model, hw.memsize),
+> `route`, and `ipconfig` are all unresolvable → the agent's heartbeat
+> carried `boot_time: null, mac_uptime_s: null` and capability_report
+> `hardware_model: null` → endpoint `payload_keys_exact`/type checks reject
+> every heartbeat + capability_report (schema_violation) → close 4003 after
+> the 2nd violation → launchd respawn → 13 s loop. Boot_id was RANDOM per
+> process (derive_boot_id fallback) — the tell-tale. The bench agent never
+> hit this because it ran from a full shell PATH. All AT-09 "fresh" readings
+> were the flapping session; sleep records died `unexpected_wake`. Also
+> found afterwards: a STALE pre-v2 agent (ag-4d00, this repo's code as of
+> Sunday, --enable-sleep etc.) was still running on the harness Mac under
+> launchd — killed it; it was not the loop's cause but must stay off during
+> power ATs. FIX: `agent/maccontrol_agent/events.py` resolves sysctl/route/
+> ipconfig by absolute path (`_SYSCTL`/`_ROUTE`/`_IPCONFIG`); plist template
+> PATH gained /usr/sbin:/sbin. Deploy = copy events.py to the target +
+> restart the agent (pairing and enabled flags in ~/.maccontrol/agent.json
+> survive; ensure --enable-sleep --enable-restart --enable-shutdown are in
+> the plist args). Verified locally under the restricted PATH: boot_key int,
+> hw.model string, network reachable+ip.
+>
+> **Phase 6 hardening item:** the hello handler SHOULD validate
+> `protocol_version == 2` and close 4003 immediately with a clear reason
+> instead of accepting then loop-rejecting downstream frames (mid-gate
+> firmware change deferred — AT-06 pins current rejection behavior).
+>
+> **AT-09 retry after the PATH fix: sleep evidence chain fully PASSED**
+> (expected_offline in-window, stale post-window, boot_id retained,
+> sleep_confirmed) — but the harness's cleanup WAKE never woke the target
+> (asleep >120 s; user keypress recovered it). Root cause: HID wake from a
+> SLEEPING host never worked — the ESP32 config descriptor did not declare
+> USB remote wakeup (core default = self-powered only), so macOS kept the
+> port suspended and the wake key-tap (and every report) was dropped on the
+> suspended bus. Never caught before: 09-27 AT-09 had humans wake the Mac;
+> AT-08's phase_wake never ran live. FIX (`src/hid_keyboard.cpp`):
+> `USB.usbAttributes(SELF_POWERED | REMOTE_WAKEUP)` before `USB.begin()`
+> (esp32-hal-tinyusb.c callback is weak; usbAttributes() is pre-start only)
+> + `hostResumeIfSuspended()` (`tud_remote_wakeup()` + bounded resume wait)
+> called from send_chord/typeText/keyDown. Native 146/146, both envs,
+> flashed (VERSION built 2026-09-28T19:2xZ), AT-09 re-run pending.
+> LESSON: every HID path must be tested against a genuinely sleeping host —
+> "enumerates and types while awake" says nothing about suspend/resume.
+>
+> **Wake diagnosis (device log `wake_debug`, sus/wu/ms/ok): on this target
+> (Mac16,10, Apple Silicon, direct cable) HID wake is PHYSICALLY
+> IMPOSSIBLE.** The host powers the USB port OFF in sleep: the ESP32
+> deconfigures (~9 s after sleep onset the link reads detached; at wake
+> time `sus=0, ok=0` = not even suspended, nothing for remote wakeup to
+> signal). A wired USB keyboard still wakes this Mac, so ports are
+> selectively managed per-device; the ESP32-S3 (composite-declared... now
+> keyboard-only, remote-wakeup attr set) loses the port anyway. Also:
+> rebooting the ESP32 while the host sleeps can never recover HID (no
+> enumeration without an awake host) — documented constraint, agent
+> wake impossible by definition (the agent IS the asleep host).
+> GATE DECISION: wake ACTUATION is human (keypress) on such hosts; the
+> wake RECORD is still device-verified (post-dispatch new-session hello +
+> awake burst → wake_confirmed) — at08/at09 now print that prompt
+> (`ask_human`, TTY-gated). Hosts that only SUSPEND the port (bench
+> Intel/older Macs, e.g. 09-27 behavior) still get true HID remote
+> wakeup via the descriptor attr + hostResumeIfSuspended path — keep both.
+
+## 2026-09-28: pairing-admin off-by-one FIXED (built + bundled, flash owed)
+
+> `POST /api/v1/pairing/revoke` and `…/window` always 404'd (`not_found`)
+> because the route block used prefix length 17 where `"/api/v1/pairing/"`
+> is 16 — `substr(17)` turned `revoke` into `evoke`. The Web UI "Revoke
+> pairing" button was therefore dead; the user could not un-pair to bind a
+> different agent. Fixed in `src/http_api.cpp` (17→16 in compare+substr).
+> Native 146/146; both envs compile; `dist/esp32-s3/` refreshed (VERSION
+> built 2026-09-28T14:49:33Z). **NOT FLASHED yet** — rerun
+> `pio run -e esp32-s3-devkitc-1 -t upload` ('com' cable), then the Web UI
+> Pairing tab revoke works; pairing state lives in NVS and survives the
+> app-partition flash. Full forensics: `docs/DEBUG-PAIRING-ADMIN-404.md`.
+>
+> **Same-day agent fix (`agent/maccontrol_agent/ui.py`):** the osascript
+> pairing-dialog fallback (tkinter missing) fired on EVERY headful start,
+> even when paired — so a crash-looping agent (e.g. a pre-v2 agent halted
+> by close 4003 protocol_mismatch, respawned by launchd every 10 s) spammed
+> the "Enter pairing code" dialog indefinitely. Now prompts only when
+> unpaired. Lesson recorded: pair a v1 agent against the v2 firmware and
+> you get exactly that loop — the other Mac needed the v1.2.0 agent.
+
 ## 2026-09-27: sleep-dispatch fix BUILT + BUNDLED, flash BLOCKED on cabling
 
 > Sleep was dispatched as Cmd+Alt+Power — on modern macOS that only sleeps

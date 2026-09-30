@@ -238,7 +238,13 @@ class PollingTransport:
                     return 0
 
     async def _respect_offline_window(self):
+        """Sleep out a declared expected-offline window before polling again.
+
+        1 s slices: a detected host wake clears rt.expected_offline_until and
+        polling must resume within ~1 s, not at the original deadline.
+        """
         rt = self.rt
+        announced = False
         while not rt.stop_event.is_set():
             until = rt.expected_offline_until
             if until is None:
@@ -247,9 +253,11 @@ class PollingTransport:
             if remaining <= 0:
                 rt.expected_offline_until = None
                 return True
-            rt.log("expected-offline window: holding polling for %.1f s" % remaining)
+            if not announced:
+                rt.log("expected-offline window: holding polling for %.1f s" % remaining)
+                announced = True
             try:
-                await asyncio.wait_for(rt.stop_event.wait(), timeout=remaining)
+                await asyncio.wait_for(rt.stop_event.wait(), timeout=min(1.0, remaining))
             except asyncio.TimeoutError:
                 pass
         return False

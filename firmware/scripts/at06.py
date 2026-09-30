@@ -205,6 +205,13 @@ def step3_pairing_ceremony(checker, hostname, code, state_file):
 
 
 def start_agent_daemon(hostname, state_file, bundle_id, transport=None):
+    # Sweep stray harness daemons from earlier runs first: two daemons
+    # sharing one state file hold the SAME pairing token, so each hello
+    # supersedes the other's live session (agent_superseded/1000) and kills
+    # in-flight dispatch evidence — AT-11 quit rounds failed exactly this
+    # way after AT-06 run 1's daemon outlived run 2's re-pair (2026-09-30).
+    subprocess.run(["pkill", "-f", "maccontrol_agent"], capture_output=True)
+    time.sleep(1.0)
     cmd = [AGENT_PY, "-m", "maccontrol_agent", "--hostname", hostname,
            "--state-file", state_file, "--allow", bundle_id,
            "--enable-launch", "--enable-quit", "--headless"]
@@ -255,7 +262,12 @@ def step5_mode_b_evidence(checker, base, read_key, control_key, hostname,
     if s == 200:
         checker.check("mode == 'B' (paired)", doc.get("mode") == "B",
                       json.dumps(doc.get("mode")))
-        checker.check("capability_level == 'L2'", doc.get("capability_level") == "L2",
+        # Phase 5 amendment (mc_openapi.cpp): L3 while paired && connected,
+        # L2 while paired, L1 in Mode A. Step 5 establishes a LIVE session,
+        # so L3 is the correct expectation (the pre-amendment script
+        # expected L2 here; the device behavior is correct).
+        checker.check("capability_level == 'L3' (paired && connected)",
+                      doc.get("capability_level") == "L3",
                       json.dumps(doc.get("capability_level")))
         agent = doc.get("agent") or {}
         checker.check("agent.paired == true and agent.connected == true",

@@ -1676,12 +1676,12 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
 
     // ---- Pairing administration (spec 3.2). Session-authenticated ADMIN,
     // same pattern as /api/v1/keys.
-    if (req.path == "/api/v1/pairing" || req.path.compare(0, 17, "/api/v1/pairing/") == 0) {
+    if (req.path == "/api/v1/pairing" || req.path.compare(0, 16, "/api/v1/pairing/") == 0) {
         if (!session_auth) {
             sendError(mcco::ErrCode::Forbidden, "pairing administration requires a Web UI session");
             return;
         }
-        const std::string rest = (req.path.size() > 17) ? req.path.substr(17) : "";
+        const std::string rest = (req.path.size() > 16) ? req.path.substr(16) : "";
         if (rest.empty() && req.method == "GET") {
             JsonDocument resp;
             {

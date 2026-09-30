@@ -9,6 +9,7 @@ psutil with subprocess fallbacks, all best-effort-null per spec 9.
 from __future__ import annotations
 
 import getpass
+import os
 import platform
 import subprocess
 import time
@@ -27,7 +28,7 @@ def get_boot_key():
     """kern.boottime in seconds since epoch, or None if unavailable."""
     try:
         out = subprocess.run(
-            ["sysctl", "-n", "kern.boottime"],
+            [_SYSCTL, "-n", "kern.boottime"],
             capture_output=True, text=True, timeout=5,
         ).stdout
         # '{ sec = 1700000000, usec = 0 }'
@@ -109,6 +110,19 @@ def _cmd_output(argv, timeout=5):
         return ""
 
 
+# The shipped launchd plist's PATH excludes /usr/sbin (where sysctl lives),
+# so a launchd-run agent cannot find "sysctl" by name: kern.boottime and
+# hw.model probing silently fail, the heartbeat carries boot_time null, and
+# the endpoint schema-rejects every heartbeat + capability_report
+# (2026-09-28 production finding — the Mac works when run from a full shell
+# PATH and loops schema_violation/4003 under launchd). Resolve absolutely.
+_SYSCTL = ("/usr/sbin/sysctl" if os.path.exists("/usr/sbin/sysctl")
+           else "sysctl")
+_ROUTE = "/sbin/route" if os.path.exists("/sbin/route") else "route"
+_IPCONFIG = ("/usr/sbin/ipconfig" if os.path.exists("/usr/sbin/ipconfig")
+             else "ipconfig")
+
+
 class SystemSampler:
     """Samples cpu/memory/disk/network for the extended heartbeat payload.
 
@@ -179,7 +193,7 @@ class SystemSampler:
         if not used:
             return None
         try:
-            memsize = int(_cmd_output(["sysctl", "-n", "hw.memsize"]).strip())
+            memsize = int(_cmd_output([_SYSCTL, "-n", "hw.memsize"]).strip())
             return round(used * page_size * 100.0 / memsize, 1)
         except Exception:
             return None
@@ -209,7 +223,7 @@ class SystemSampler:
         reachable = False
         ip = None
         try:
-            p = subprocess.run(["route", "-n", "get", "default"],
+            p = subprocess.run([_ROUTE, "-n", "get", "default"],
                                capture_output=True, text=True, timeout=5)
             reachable = p.returncode == 0
             if reachable:
@@ -220,7 +234,7 @@ class SystemSampler:
                         iface = val.strip()
                         break
                 if iface:
-                    addr = _cmd_output(["ipconfig", "getifaddr", iface]).strip()
+                    addr = _cmd_output([_IPCONFIG, "getifaddr", iface]).strip()
                     ip = addr or None
         except Exception:
             pass
@@ -239,7 +253,7 @@ def get_hardware_model():
     global _hardware_model, _hardware_model_probed
     if not _hardware_model_probed:
         _hardware_model_probed = True
-        out = _cmd_output(["sysctl", "-n", "hw.model"]).strip()
+        out = _cmd_output([_SYSCTL, "-n", "hw.model"]).strip()
         _hardware_model = out or None
     return _hardware_model
 
@@ -423,6 +437,9 @@ class Telemetry:
         self.rt.last_wake_reported_at = time.monotonic()
         self.rt.log("detected sleep/wake from clock divergence (%ds); "
                     "SleepWatcher did not report it" % drift)
+        # Host is provably back: release any expected-offline reconnect hold
+        # (same rationale as SleepWatcher._handle_wake).
+        self.rt.expected_offline_until = None
         self.rt.enqueue("system_state_changed", {"state": "waking"})
         self._schedule_awake()
 

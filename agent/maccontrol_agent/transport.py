@@ -211,8 +211,15 @@ class WSTransport:
                 return 0
 
     async def _respect_offline_window(self):
-        """Sleep out a declared expected-offline window before reconnecting."""
+        """Sleep out a declared expected-offline window before reconnecting.
+
+        Waited in 1 s slices, not one long sleep: a detected host wake
+        (SleepWatcher / clock divergence) clears rt.expected_offline_until
+        and the reconnect must release within ~1 s, not at the original
+        deadline tens of seconds in the future.
+        """
         rt = self.rt
+        announced = False
         while not rt.stop_event.is_set():
             until = rt.expected_offline_until
             if until is None:
@@ -221,10 +228,12 @@ class WSTransport:
             if remaining <= 0:
                 rt.expected_offline_until = None
                 return True
-            rt.log("expected-offline window: holding reconnect for %.1f s"
-                   % remaining)
+            if not announced:
+                rt.log("expected-offline window: holding reconnect for %.1f s"
+                       % remaining)
+                announced = True
             try:
-                await asyncio.wait_for(rt.stop_event.wait(), timeout=remaining)
+                await asyncio.wait_for(rt.stop_event.wait(), timeout=min(1.0, remaining))
             except asyncio.TimeoutError:
                 pass
         return False

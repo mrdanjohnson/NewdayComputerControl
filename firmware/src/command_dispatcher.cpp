@@ -1,5 +1,6 @@
 #include "command_dispatcher.h"
 #include <ArduinoJson.h>
+#include <cstdio>
 #include <esp_task_wdt.h>
 #include <string.h>
 #include "agent_link.h"
@@ -179,10 +180,27 @@ void CommandDispatcher::taskEntry(void* arg) {
             Guard g(ctx->engine_mutex);
             ctx->engine->complete_dispatch(item.command_id, ok);
         }
-        ctx->log->write(mcco::LogCategory::Command,
-                        ok ? mcco::LogLevel::Info : mcco::LogLevel::Error,
-                        ok ? "dispatch" : "dispatch_failed", item.command_id, nullptr, nullptr,
-                        nullptr);
+        if (type == mcco::CommandType::Wake) {
+            // Remote-wakeup visibility: a wake that fails on a suspended
+            // bus is otherwise indistinguishable from a dead HID path.
+            // Detail keys are single-letter: the log ring slot is 224 B
+            // total and the base entry already consumes most of it.
+            const HidKeyboard::WakeDebug wd = ctx->hid->wakeDebug();
+            char detail[64];
+            snprintf(detail, sizeof(detail), "{\"sus\":%d,\"wu\":%d,\"ms\":%u,"
+                                             "\"ok\":%d}",
+                     wd.was_suspended ? 1 : 0, wd.wakeup_ok ? 1 : 0,
+                     wd.resume_ms, wd.sent_ok ? 1 : 0);
+            ctx->log->write(mcco::LogCategory::Command,
+                            ok ? mcco::LogLevel::Info : mcco::LogLevel::Warn,
+                            "wake_debug", item.command_id, nullptr, nullptr,
+                            detail);
+        } else {
+            ctx->log->write(mcco::LogCategory::Command,
+                            ok ? mcco::LogLevel::Info : mcco::LogLevel::Error,
+                            ok ? "dispatch" : "dispatch_failed",
+                            item.command_id, nullptr, nullptr, nullptr);
+        }
         } catch (const std::exception&) {
             ctx->log->write(mcco::LogCategory::Command, mcco::LogLevel::Error,
                             "dispatch_exception", item.command_id, nullptr, nullptr, nullptr);

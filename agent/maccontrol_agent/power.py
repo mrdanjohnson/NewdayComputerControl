@@ -206,6 +206,13 @@ class SleepWatcher:
         # Timestamp coordinates with the clock-divergence detector in
         # Telemetry (episodes already reported here are not re-reported).
         self.rt.last_wake_reported_at = time.monotonic()
+        # The host is provably back: release any expected-offline reconnect
+        # hold immediately (the _respect_offline_window wait re-reads this
+        # field every second). Without this the agent idles out the rest of
+        # a sleep-declared 60 s window after a human/early HID wake and the
+        # endpoint sees a dead session on an awake host (AT-09 round-2
+        # precondition failure, 2026-09-29).
+        self.rt.expected_offline_until = None
         self.rt.enqueue("system_state_changed", {"state": "waking"})
         if self._wake_timer is not None:
             self._wake_timer.cancel()

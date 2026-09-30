@@ -275,6 +275,21 @@ bool CommandEngine::complete_dispatch(const std::string& command_id, bool dispat
         return ledger_.append_revision(disp);
     }
 
+    // Mode B wake with failed actuation: the HID keypress is best-effort —
+    // a deeply sleeping host powers the USB port off, so no keypress can
+    // succeed, yet the wake itself remains verifiable via the §8.1.2
+    // evidence (post-dispatch new-session hello + awake burst). Advance to
+    // confirming so that evidence can still complete the record; without
+    // this the honest actuation failure terminated it dispatch_error
+    // seconds before the human/early-wake evidence arrived (AT-08 wake
+    // rounds, 2026-09-30). If the evidence never arrives the deadline sweep
+    // still ends it honestly. Other types and Mode A keep the immediate
+    // honest failure below.
+    if (mode_ == 'B' && !dispatch_ok && cur->type == CommandType::Wake) {
+        disp.state = CommandState::Confirming;
+        return ledger_.append_revision(disp);
+    }
+
     // Mode A (spec 5.2.2): dispatch success terminates immediately as
     // unconfirmed/hid_only. `completed` is unreachable without MCA evidence.
     CommandRecord term = disp;
@@ -555,11 +570,14 @@ size_t CommandEngine::handle_hello(const char* boot_id, bool had_boot, const cha
     const uint64_t now_mono = clock_.millis();
     const std::string prev_engine = known_boot_id_;
     size_t n = 0;
-    std::vector<std::string> ids;
-    for (const CommandRecord* rec : ledger_.list_newest_first()) ids.push_back(rec->command_id);
-    for (const std::string& id : ids) {
-        const CommandRecord* cur = ledger_.latest(id);
+    // Back-index traversal: no O(commands) snapshot allocation (the
+    // list_newest_first() snapshot here panicked with bad_alloc under
+    // reconnect churn), and safe against the append_revision() calls below.
+    const size_t count = ledger_.command_count();
+    for (size_t k = 0; k < count; ++k) {
+        const CommandRecord* cur = ledger_.newest_from_back(k);
         if (!cur) continue;
+        const std::string id = cur->command_id;
 
         // Terminal records never reopen; a reconnect after a completed sleep
         // or shutdown is logged as post-terminal evidence (§5.3.2) and MUST

@@ -109,3 +109,64 @@ bool FsLedgerStorage::replace_all(const std::vector<std::string>& lines) {
     f_ = LittleFS.open(kPath, "a");
     return (bool)f_;
 }
+
+bool FsLedgerStorage::rewrite_filtered(
+    const std::function<bool(const std::string& line)>& keep) {
+    // O(1)-heap streaming compaction: read the durable file line by line
+    // (bounded buffer) and write the survivors to the temp file, then
+    // commit by rename. The ILedgerStorage default materializes the whole
+    // file in a std::vector — that OOMed (bad_alloc -> panic) once the
+    // append-only stream passed ~100 KB (2026-09-29).
+    Guard g(mutex_);
+    File r = LittleFS.open(kPath, "r");
+    File t = LittleFS.open(kTmpPath, "w");
+    if (!t) {
+        if (r) r.close();
+        return false;
+    }
+    bool ok = true;
+    if (r) {
+        std::string line;
+        line.reserve(512);
+        while (r.available()) {
+            char buf[256];
+            int n = r.read((uint8_t*)buf, sizeof(buf));
+            if (n <= 0) break;
+            for (int i = 0; i < n; i++) {
+                if (buf[i] == '\n') {
+                    if (!line.empty() && keep(line)) {
+                        if (t.write((const uint8_t*)line.data(), line.size()) != line.size() ||
+                            t.write((uint8_t)'\n') != 1) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    line.clear();
+                } else {
+                    line += buf[i];
+                }
+            }
+            if (!ok) break;
+        }
+        if (ok && !line.empty() && keep(line)) { // defensive: tail without newline
+            if (t.write((const uint8_t*)line.data(), line.size()) != line.size() ||
+                t.write((uint8_t)'\n') != 1) {
+                ok = false;
+            }
+        }
+        r.close();
+    }
+    t.flush();
+    t.close();
+    if (!ok) {
+        LittleFS.remove(kTmpPath);
+        return false;
+    }
+    if (f_) {
+        f_.close();
+        f_ = File();
+    }
+    if (!LittleFS.rename(kTmpPath, kPath)) return false;
+    f_ = LittleFS.open(kPath, "a");
+    return (bool)f_;
+}

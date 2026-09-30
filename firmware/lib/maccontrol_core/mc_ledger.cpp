@@ -118,6 +118,17 @@ bool Ledger::load() {
         }
     });
     loaded_ = ok;
+    // Bound the RAM mirror to capacity at boot: the durable stream is
+    // append-only and grows forever, and without this trim the mirror holds
+    // the entire history after every boot (285+ records ≈ most of the
+    // 320 KB S3 heap — the 2026-09-29 bad_alloc panic loop). Same semantics
+    // as runtime eviction (spec 5.1.1): non-terminal victims are terminated
+    // (persisted) here; terminal victims just leave the observable surface.
+    // Deferred compact: one durable-stream rewrite at the end, not one per
+    // evicted record (flash churn mid-setup starved the task watchdog).
+    while (entries_.size() > capacity_) {
+        evict_oldest(entries_.size() - 1 == capacity_);
+    }
     return ok;
 }
 
@@ -169,7 +180,7 @@ std::vector<const CommandRecord*> Ledger::list_newest_first() const {
     return out;
 }
 
-void Ledger::evict_oldest() {
+void Ledger::evict_oldest(bool run_compact) {
     if (fifo_.empty()) return;
     const std::string victim = fifo_.front();
     auto it = entries_.find(victim);
@@ -191,26 +202,28 @@ void Ledger::evict_oldest() {
         entries_.erase(it);
     }
     fifo_.pop_front();
-    compact();
+    if (run_compact) compact();
 }
 
 void Ledger::compact() {
     if (pending_evict_.empty()) return;
-    // Rewrite the durable stream verbatim minus evicted commands: the full
-    // revision history stays on disk even though RAM holds one record per
-    // command. Unparseable lines are kept verbatim (load() already skips them).
-    std::vector<std::string> lines;
-    storage_.read_all([&](const std::string& line) {
+    // Rewrite the durable stream minus evicted commands: the full revision
+    // history stays on disk even though RAM holds one record per command.
+    // Unparseable lines are kept verbatim (load() already skips them).
+    // A failed rewrite keeps pending_evict_ so a later compact retries —
+    // silently dropping the list here is how the durable stream used to
+    // grow past capacity (evicted records reloaded and re-mirrored at boot).
+    // rewrite_filtered streams at O(1) heap on the device.
+    const bool ok = storage_.rewrite_filtered([&](const std::string& line) {
         CommandRecord rec;
         if (record_from_json(line, rec)) {
             for (const auto& id : pending_evict_) {
-                if (id == rec.command_id) return;
+                if (id == rec.command_id) return false;
             }
         }
-        lines.push_back(line);
+        return true;
     });
-    storage_.replace_all(lines);
-    pending_evict_.clear();
+    if (ok) pending_evict_.clear();
 }
 
 } // namespace mcco

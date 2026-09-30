@@ -29,10 +29,13 @@
   <key>StandardErrorPath</key>
   <string>/Users/CHANGE_ME/.maccontrol/agent.launchd.log</string>
 
+  <!-- /usr/sbin and /sbin are NOT in launchd's default PATH: sysctl, route,
+       and ipconfig live there and the agent's heartbeat/probes silently
+       degrade without them (2026-09-28 production finding). -->
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
   </dict>
 </dict>
 </plist>

@@ -542,6 +542,38 @@ TEST(EngineAgentPredicates, LockCompletesOnScreenLockChanged) {
     EXPECT_EQ(rec->evidence[0], "evt_lock");
 }
 
+TEST(EngineAgentPredicates, ModeBWakeFailedActuationStaysConfirmingForEvidence) {
+    // HID wake actuation is best-effort: a deeply sleeping host powers the
+    // USB port off, so the keypress cannot succeed — but the §8.1.2 evidence
+    // (post-dispatch new-session hello + awake burst, e.g. from a human
+    // keypress) can still confirm the wake. A failed actuation must advance
+    // the record to confirming, not terminate it dispatch_error (AT-08 wake
+    // rounds, 2026-09-30). Mode A keeps the immediate honest failure.
+    Ctx c;
+    c.engine.set_mode('B');
+    c.engine.set_agent_gate([](const mcco::Submission&) { return std::optional<mcco::ErrCode>(); });
+    auto out = c.engine.submit(power_sub(mcco::CommandType::Wake, "h"));
+    ASSERT_TRUE(out.ok);
+    ASSERT_TRUE(c.engine.complete_dispatch(out.record.command_id, false));
+    EXPECT_EQ(c.engine.get(out.record.command_id)->state, mcco::CommandState::Confirming);
+
+    // The late evidence completes it, exactly like a successful actuation.
+    c.engine.agent_event(hello("b_3F8A11", 1, "evt_hello"));
+    ASSERT_TRUE(c.engine.agent_event(state_changed("awake", 2, "evt_awake")));
+    const mcco::CommandRecord* rec = c.engine.get(out.record.command_id);
+    EXPECT_EQ(rec->state, mcco::CommandState::Completed);
+    EXPECT_EQ(rec->result, "wake_confirmed");
+
+    // Mode A: failed actuation is an immediate honest failure.
+    Ctx a;
+    auto out_a = a.engine.submit(power_sub(mcco::CommandType::Wake, "h2"));
+    ASSERT_TRUE(out_a.ok);
+    ASSERT_TRUE(a.engine.complete_dispatch(out_a.record.command_id, false));
+    const mcco::CommandRecord* rec_a = a.engine.get(out_a.record.command_id);
+    EXPECT_EQ(rec_a->state, mcco::CommandState::Failed);
+    EXPECT_EQ(rec_a->error_code, "dispatch_error");
+}
+
 TEST(EngineAgentPredicates, WakeRequiresHelloThenAwakeBurst) {
     Ctx c;
     auto out = submit_power_b(c, mcco::CommandType::Wake, "h");

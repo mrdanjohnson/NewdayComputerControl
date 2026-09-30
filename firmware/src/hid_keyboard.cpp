@@ -29,54 +29,70 @@ static constexpr uint8_t kKeyPower = 0x66;
 
 USBHIDKeyboard Keyboard;
 
-// Sleep is dispatched as a HID System Control report (Generic Desktop page
-// 0x01, System Control collection 0x80, Sleep usage 0x82) — the mechanism
-// real keyboards use and macOS honors as instant SYSTEM sleep. The previous
-// Cmd+Alt+Power chord only slept the displays while the system kept running,
-// so the expected-offline evidence never arrived and the record timed out.
-// Descriptor written by hand: no report ID (report 0), one 1-bit Sleep field
-// + 7 bits of padding. Registered as a second device on the same HID
-// interface, alongside the keyboard report.
-static const uint8_t kSystemControlDesc[] = {
-    0x05, 0x01,        // Usage Page (Generic Desktop)
-    0x09, 0x80,        // Usage (System Control)
-    0xA1, 0x01,        // Collection (Application)
-    0x05, 0x01,        //   Usage Page (Generic Desktop)
-    0x09, 0x82,        //   Usage (Sleep)
-    0x15, 0x00,        //   Logical Minimum (0)
-    0x25, 0x01,        //   Logical Maximum (1)
-    0x75, 0x01,        //   Report Size (1)
-    0x95, 0x01,        //   Report Count (1)
-    0x81, 0x02,        //   Input (Data, Variable, Absolute)
-    0x95, 0x07,        //   Report Count (7)
-    0x81, 0x03,        //   Input (Constant) — padding
-    0xC0,              // End Collection
-};
-
-class SystemControlDevice : public USBHIDDevice {
-public:
-    uint16_t _onGetDescriptor(uint8_t* dst) override {
-        memcpy(dst, kSystemControlDesc, sizeof(kSystemControlDesc));
-        return sizeof(kSystemControlDesc);
-    }
-};
-static SystemControlDevice SystemControlDev;
-USBHID SystemControl;
+// NOTE 2026-09-28: a second HID device (hand-written System Control
+// descriptor for a HID Sleep report) lived here from 2026-09-27 15:40.
+// It enumerated correctly on macOS (both collections parsed, keyboard
+// driver matched — verified via ioreg), but from the v2-protocol flash
+// onward NO keyboard report ever reached the host: typed macros and the
+// Ctrl+Cmd+Q lock chord did nothing on two Macs, while the firmware
+// believed every dispatch succeeded. The composite descriptor (report-ID'd
+// keyboard + no-report-ID system control in one interface) is the only
+// suspect. The System Control path is gone:
+//  - Mode B sleep/restart/shutdown are agent-executed (protocol v2), HID
+//    is not involved;
+//  - Mode A HID sleep was already proven useless on modern macOS
+//    2026-09-27 (report enumerates, macOS parses, silently ignores) and
+//    the Cmd+Alt+Power chord only display-sleeps.
+// Mode A sleep on S3 now has no HID mechanism and fails honestly
+// (failed/dispatch_error) instead of silently breaking the keyboard.
 #endif
 
 void HidKeyboard::begin() {
 #if MC_HAS_USB_HID
     Keyboard.begin();
-    // Register the system-control descriptor BEFORE USB start: TinyUSB
-    // builds the HID report descriptor at enumeration, so a device added
-    // after USB.begin() never reaches the host.
-    SystemControl.addDevice(&SystemControlDev, sizeof(kSystemControlDesc));
-    SystemControl.begin();
+    // Declare USB remote wakeup in the config descriptor (default core
+    // attributes = self-powered, no wakeup): without it a sleeping host
+    // keeps the port suspended and every HID report — including the wake
+    // key-tap — is dropped on the suspended bus (proven live 2026-09-28:
+    // AT-09 cleanup wake never woke the target). Must be set before start.
+    USB.usbAttributes(TUSB_DESC_CONFIG_ATT_SELF_POWERED |
+                      TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP);
     // TinyUSB does not start on its own: without this the device never
     // enumerates and every dispatch dies as dispatch_error.
     USB.begin();
 #endif
 }
+
+#if MC_HAS_USB_HID
+// A suspended host (Mac asleep) cannot receive reports: signal remote
+// wakeup first and give the bus a bounded window to resume. No-op when
+// the host is already awake. Requires the descriptor attribute set in
+// begin(); harmless if the host never enabled remote wakeup (the resume
+// signaling is a no-op then and the report attempt fails honestly).
+// Pulses the wakeup up to 10x, 100 ms apart (macOS resume latency after
+// a remote-wakeup signal is ~tens of ms but not bounded by the spec).
+static bool hostResumeIfSuspendedDbg(bool& was_suspended, bool& wakeup_ok,
+                                     unsigned& resume_ms) {
+    was_suspended = tud_suspended();
+    wakeup_ok = true;
+    resume_ms = 0;
+    if (!was_suspended) return true;
+    const uint32_t t0 = millis();
+    for (int i = 0; i < 10 && tud_suspended(); i++) {
+        const bool ok = tud_remote_wakeup();
+        if (i == 0) wakeup_ok = ok;
+        for (int j = 0; j < 100 && tud_suspended(); j++) delay(1);
+    }
+    resume_ms = (unsigned)(millis() - t0);
+    return !tud_suspended();
+}
+
+static void hostResumeIfSuspended() {
+    bool ws, wo;
+    unsigned ms;
+    hostResumeIfSuspendedDbg(ws, wo, ms);
+}
+#endif
 
 bool HidKeyboard::mounted() const {
 #if MC_HAS_USB_HID
@@ -85,6 +101,8 @@ bool HidKeyboard::mounted() const {
     return false; // no USB device controller on this chip
 #endif
 }
+
+HidKeyboard::WakeDebug HidKeyboard::s_wake_debug{};
 
 bool HidKeyboard::wait_mounted() {
 #if MC_HAS_USB_HID
@@ -115,17 +133,12 @@ bool HidKeyboard::send_once(mcco::CommandType type) {
             n_mods = 2;
             key = 'q';
             break;
-        case mcco::CommandType::Sleep: {
-            // System Control report: set the Sleep bit, hold briefly, then
-            // release (report 0 = no ID prefix). No keyboard-chord fallback:
-            // Cmd+Alt+Power only sleeps displays, which is semantically wrong.
-            if (!tud_mounted()) return false;
-            uint8_t sleep = 0x01;
-            if (!SystemControl.SendReport(0, &sleep, 1)) return false;
-            delay(100);
-            sleep = 0x00;
-            return SystemControl.SendReport(0, &sleep, 1);
-        }
+        case mcco::CommandType::Sleep:
+            // No HID sleep mechanism: the System Control device that carried
+            // it broke keyboard report delivery (see note above) and macOS
+            // ignored the report anyway. Mode B sleep is agent-executed; in
+            // Mode A this fails honestly at the dispatcher.
+            return false;
         case mcco::CommandType::Restart:
             mods[0] = KEY_LEFT_CTRL;
             mods[1] = KEY_LEFT_GUI;
@@ -156,10 +169,28 @@ bool HidKeyboard::send_once(mcco::CommandType type) {
 bool HidKeyboard::send_chord(mcco::CommandType type) {
 #if MC_HAS_USB_HID
     if (!wait_mounted()) return false;
+    if (type == mcco::CommandType::Wake) {
+        // Wake gets the remote-wakeup diagnostics (read by the dispatcher
+        // into the device log); other chords resume silently.
+        s_wake_debug = WakeDebug{};
+        s_wake_debug.was_suspended = tud_suspended();
+        bool wo;
+        hostResumeIfSuspendedDbg(s_wake_debug.was_suspended, wo,
+                                 s_wake_debug.resume_ms);
+        s_wake_debug.wakeup_ok = wo;
+        s_wake_debug.sent_ok = send_once(type);
+        if (!s_wake_debug.sent_ok) {
+            delay(1000);
+            if (wait_mounted()) s_wake_debug.sent_ok = send_once(type);
+        }
+        return s_wake_debug.sent_ok;
+    }
+    hostResumeIfSuspended();
     if (send_once(type)) return true;
     // Retry dispatch once (spec 15.1): allow a 1 s re-enumeration window.
     delay(1000);
     if (!wait_mounted()) return false;
+    hostResumeIfSuspended();
     return send_once(type);
 #else
     (void)type;
@@ -176,9 +207,39 @@ uint8_t HidKeyboard::modifierUsage(const char* name) {
     return 0;
 }
 
+bool HidKeyboard::serviceHostReconnect(bool agent_session_active,
+                                       bool host_declared_offline) {
+#if MC_HAS_USB_HID
+    // Host awake = live agent session (Wi-Fi heartbeat) and no open declared
+    // expected-offline window. Only then is a missing mount a re-enumeration
+    // failure; while the host sleeps the port is off by design and reconnect
+    // churn would just flap the bus — and on this host a reconnect dark-wakes
+    // the sleeping Mac, so the churn actively defeats sleep.
+    static uint8_t unmounted_s = 0;
+    if (!agent_session_active || host_declared_offline) {
+        unmounted_s = 0;
+        return false;
+    }
+    if (tud_mounted()) {
+        unmounted_s = 0;
+        return false;
+    }
+    if (++unmounted_s < 10) return false;
+    unmounted_s = 0;
+    tud_disconnect();
+    delay(200);
+    tud_connect();
+    return true;
+#else
+    (void)agent_session_active;
+    return false;
+#endif
+}
+
 bool HidKeyboard::keyDown(uint8_t code) {
 #if MC_HAS_USB_HID
     if (!tud_mounted()) return false;
+    hostResumeIfSuspended();
     Keyboard.pressRaw(code);
     return true;
 #else
@@ -211,6 +272,7 @@ bool HidKeyboard::allKeysUp() {
 bool HidKeyboard::typeText(const char* s, size_t len, uint32_t inter_key_ms) {
 #if MC_HAS_USB_HID
     if (!s || !tud_mounted()) return false;
+    hostResumeIfSuspended();
     for (size_t i = 0; i < len; i++) {
         if (!tud_mounted()) return false; // USB dropped mid-text
         uint8_t c = (uint8_t)s[i];
