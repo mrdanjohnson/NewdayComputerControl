@@ -1,6 +1,6 @@
 ---
 name: maccontrol
-description: Control a MacControl ESP32 endpoint over its HTTP API — discover and trigger macros, send power commands (wake/sleep/restart/shutdown/lock), launch/quit allowlisted apps via the paired agent, read status/capabilities/agent telemetry/logs, detect host sleep/offline
+description: Control a MacControl ESP32 endpoint over its HTTP API — discover and trigger macros, send power commands (wake/sleep/restart/shutdown/lock/unlock), launch/quit allowlisted apps via the paired agent, read status/capabilities/agent telemetry/logs, detect host sleep/offline/login-screen
 type: prompt
 whenToUse: When the user asks to trigger a macro, lock/wake/sleep/restart/shutdown a Mac, launch or quit an app on the paired Mac, query the MacControl device or its agent telemetry, or check whether the managed Mac is awake/asleep/offline
 arguments:
@@ -117,13 +117,36 @@ deadline (macro timeout + 5 s). A macro without `expected_event` still ends
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $CONTROL_KEY" \
-  $MACCONTROL_HOST/api/v1/system/lock        # wake|sleep|restart|shutdown|lock
+  $MACCONTROL_HOST/api/v1/system/lock        # wake|sleep|restart|shutdown|lock|unlock
 ```
 
 These are **real**: they HID-type Ctrl+Cmd+Q / power chords into the attached
 Mac. `lock` and `sleep` are usually safe to demo; **`restart` and `shutdown`
 interrupt whatever a person is doing on that Mac — always get explicit
 confirmation first**. Same 202 → poll-the-record pattern as macros.
+
+**Unlock / Wake & Log In (device-side password, 2026-09-30 amendment):**
+`POST /api/v1/system/unlock` types a password stored ON THE DEVICE at the
+lock/login screen (device HID-types it + Enter). It needs no agent session
+(the agent is offline at the login window) and completes on the agent's
+`screen_lock_changed {locked:false}` evidence (`unlock_confirmed`, 60 s
+deadline); without a paired agent it ends `unconfirmed`/`hid_only`. Check or
+manage the stored password (ADMIN role):
+
+```bash
+curl -s -H "Authorization: Bearer $READ_KEY"  $MACCONTROL_HOST/api/v1/system/unlock_password   # {"set":true|false} — value NEVER returned
+curl -s -X PUT -H "Authorization: Bearer $ADMIN_KEY" -H 'Content-Type: application/json' \
+  -d '{"password":"..."}' $MACCONTROL_HOST/api/v1/system/unlock_password   # 1-64 printable ASCII
+curl -s -X DELETE -H "Authorization: Bearer $ADMIN_KEY" $MACCONTROL_HOST/api/v1/system/unlock_password
+```
+
+Full unattended flow (what the Web UI's "Wake & Log In" button does):
+`POST /api/v1/system/wake` → poll `GET /api/v1/agent/status` until
+`session_active:true` and `user.screen_locked:true` (the password prompt;
+max ~75 s) → `POST /api/v1/system/unlock`. `GET /api/v1/status` also exposes
+a synthesized `mac.login_screen` boolean (true only while the agent is live
+and reports the screen locked). Never put the password in a macro's text
+steps — macro definitions are readable with a READ key.
 
 Lifecycle notes (Phase 4.5+): sleep/restart/shutdown records carry an
 `expected_offline_window` (`{open_after_s: 3, close_after_s: 60}`), and when a

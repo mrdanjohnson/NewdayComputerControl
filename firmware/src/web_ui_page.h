@@ -93,6 +93,8 @@ footer{padding:8px 16px;color:#8a97a5;font-size:11px}
       <button class="act" onclick="powerCmd('restart')">Restart</button>
       <button class="act" onclick="powerCmd('shutdown')">Shutdown</button>
       <button class="act" onclick="powerCmd('lock')">Lock</button>
+      <button class="act" onclick="powerCmd('unlock')">Unlock</button>
+      <button class="act" onclick="wakeAndLogin()">Wake &amp; Log In</button>
       <span id="powerresult"></span>
     </div></div>
   </section>
@@ -210,6 +212,16 @@ footer{padding:8px 16px;color:#8a97a5;font-size:11px}
       <div style="margin-top:10px"><button class="act" onclick="changePassword()">Change password</button></div>
       <p class="muted">5 consecutive failed logins lock the Web UI for 60 s (spec 13.1.1). Rate limits: READ 60, CONTROL 30, ADMIN 10 requests per minute per key.</p>
     </div>
+    <div class="card"><h2>Unlock password</h2><div id="upwmsg"></div>
+      <div id="upw-status" class="muted">Checking…</div>
+      <label for="u-pw">Mac login password (1-64 printable characters)</label>
+      <input type="password" id="u-pw" autocomplete="new-password">
+      <div style="margin-top:10px">
+        <button class="act" onclick="setUnlockPw()">Save</button>
+        <button class="sec" onclick="clearUnlockPw()">Clear</button>
+      </div>
+      <p class="muted">Stored only on this device and typed over USB by the Unlock / Wake &amp; Log In buttons at the lock screen. Never sent over the network again, never shown after saving. Saved as plaintext on the device — anyone with physical access to this board's flash could read it.</p>
+    </div>
   </section>
 
   <section id="tab-logs" style="display:none">
@@ -314,6 +326,7 @@ function showApp(){
   el('app').style.display='block';
   el('logoutbtn').style.display='';el('httpwarn').style.display='';
   loadDevice();
+  loadUnlockPwStatus();
   showTab('dash');
 }
 async function doLogin(){
@@ -371,6 +384,33 @@ async function powerCmd(name){
     var r=await api('/api/v1/system/'+name,'POST',{});
     trackCommand(r,null);
   }catch(e){showErr('err-global',e);}
+}
+// Wake & Log In composite: wake the host, then wait for the agent to come
+// back and report a locked screen (the password prompt) before unlocking.
+// Falls back to a message after 75 s so a host that wakes to the desktop
+// (no password) or loses its agent never hangs the button.
+async function wakeAndLogin(){
+  el('powerresult').innerHTML='<span class="muted">Waking…</span>';
+  try{await api('/api/v1/system/wake','POST',{});}catch(e){showErr('err-global',e);return;}
+  const deadline=Date.now()+75000;
+  for(;;){
+    await new Promise(function(r){setTimeout(r,2000);});
+    try{
+      var s=await api('/api/v1/agent/status','GET');
+      if(s.session_active && s.user && s.user.screen_locked===true){
+        el('powerresult').innerHTML='<span class="muted">At login screen — unlocking…</span>';
+        try{
+          var r=await api('/api/v1/system/unlock','POST',{});
+          trackCommand(r,null);
+        }catch(e){showErr('err-global',e);}
+        return;
+      }
+    }catch(e){/* agent not back yet */}
+    if(Date.now()>deadline){
+      el('powerresult').innerHTML='<span class="muted">No login screen detected — if the Mac is at a password prompt, press Unlock.</span>';
+      return;
+    }
+  }
 }
 function trackCommand(r,btn){
   var span=document.createElement('span');span.className='cmdlink';
@@ -639,6 +679,33 @@ async function changePassword(){
     el('k-pw').value='';
     el('pwmsg').innerHTML='<div class="ok">Password changed.</div>';
   }catch(e){showErr('pwmsg',e);}
+}
+
+// ---- Unlock password (device-stored; see Settings card copy) --------------
+async function loadUnlockPwStatus(){
+  try{
+    var s=await api('/api/v1/system/unlock_password','GET');
+    el('upw-status').textContent=s.set?'A password is configured.':'No password configured.';
+  }catch(e){el('upw-status').textContent='Status unavailable.';}
+}
+async function setUnlockPw(){
+  el('upwmsg').innerHTML='';
+  var v=el('u-pw').value;
+  if(!v){el('upwmsg').innerHTML='<div class="err">Enter the Mac login password first.</div>';return;}
+  try{
+    await api('/api/v1/system/unlock_password','PUT',{password:v});
+    el('u-pw').value='';
+    el('upwmsg').innerHTML='<div class="ok">Saved.</div>';
+    loadUnlockPwStatus();
+  }catch(e){showErr('upwmsg',e);}
+}
+async function clearUnlockPw(){
+  el('upwmsg').innerHTML='';
+  try{
+    await api('/api/v1/system/unlock_password','DELETE');
+    el('upwmsg').innerHTML='<div class="ok">Cleared.</div>';
+    loadUnlockPwStatus();
+  }catch(e){showErr('upwmsg',e);}
 }
 
 // ---- Pairing tab (spec 14.1): pairing state, one-time code display, window countdown.

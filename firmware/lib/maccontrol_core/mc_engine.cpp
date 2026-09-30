@@ -68,6 +68,7 @@ bool CommandEngine::validate_parameters(CommandType t, const std::string& params
         case CommandType::Restart:
         case CommandType::Shutdown:
         case CommandType::Lock:
+        case CommandType::Unlock:
             return o.size() == 0; // power commands carry no parameters
         case CommandType::MacroExecute:
             // The schema is validated here (400) before the 404 availability
@@ -842,6 +843,28 @@ bool CommandEngine::agent_event(const AgentEvent& ev) {
             if (deserializeJson(p, ev.payload_json)) return false;
             const bool locked = p["locked"] | false;
             bool advanced = false;
+            // Amendment (2026-09-30): a lock->unlock transition completes the
+            // newest confirming `unlock` record. This is the predicate at BOTH
+            // the lock screen (agent alive in the locked session) and the
+            // login window (agent appears only after login, reporting the
+            // ScreenIsLocked false transition then).
+            if (!locked) {
+                for (const CommandRecord* rec : ledger_.list_newest_first()) {
+                    if (rec->state != CommandState::Confirming ||
+                        rec->type != CommandType::Unlock)
+                        continue;
+                    CommandRecord next = *rec;
+                    push_evidence(next, ev.event_id);
+                    next.state = CommandState::Completed;
+                    next.result = "unlock_confirmed";
+                    if (ledger_.append_revision(next)) {
+                        drop_side(rec->command_id);
+                        advanced = true;
+                    }
+                    break;
+                }
+            }
+            if (advanced) return true;
             if (locked) {
                 for (const CommandRecord* rec : ledger_.list_newest_first()) {
                     if (rec->state != CommandState::Confirming ||

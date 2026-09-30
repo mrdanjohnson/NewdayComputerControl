@@ -542,6 +542,46 @@ TEST(EngineAgentPredicates, LockCompletesOnScreenLockChanged) {
     EXPECT_EQ(rec->evidence[0], "evt_lock");
 }
 
+TEST(EngineAgentPredicates, UnlockCompletesOnScreenUnlockChanged) {
+    Ctx c;
+    auto out = submit_power_b(c, mcco::CommandType::Unlock, "h");
+
+    // locked:true does not advance the unlock predicate.
+    EXPECT_FALSE(c.engine.agent_event(screen_lock(true, 2, "evt_lock")));
+    EXPECT_EQ(c.engine.get(out.record.command_id)->state, mcco::CommandState::Confirming);
+
+    // The lock->unlock transition (lock screen unlock OR post-login-window
+    // burst, both via the same ambient event) completes it.
+    ASSERT_TRUE(c.engine.agent_event(screen_lock(false, 3, "evt_unlock")));
+    const mcco::CommandRecord* rec = c.engine.get(out.record.command_id);
+    EXPECT_EQ(rec->state, mcco::CommandState::Completed);
+    EXPECT_EQ(rec->result, "unlock_confirmed");
+    ASSERT_EQ(rec->evidence.size(), 1u);
+    EXPECT_EQ(rec->evidence[0], "evt_unlock");
+}
+
+TEST(EngineAgentPredicates, UnlockNotSessionGated) {
+    // Amendment 2026-09-30: unlock must accept in Mode B with NO agent gate
+    // at all — at the true login window the agent is not running yet, so
+    // gating on a live session would make the command useless exactly where
+    // it is needed. (Compare: lock/sleep/restart/shutdown are session-gated.)
+    Ctx c;
+    c.engine.set_mode('B');
+    auto out = c.engine.submit(power_sub(mcco::CommandType::Unlock, "h"));
+    EXPECT_TRUE(out.ok);
+    EXPECT_EQ(out.http_status, 202);
+    EXPECT_EQ(c.engine.get(out.record.command_id)->state, mcco::CommandState::Accepted);
+}
+
+TEST(EngineValidation, UnlockRejectsParameters) {
+    Ctx c;
+    mcco::Submission sub = power_sub(mcco::CommandType::Unlock, "h");
+    sub.parameters_json = "{\"anything\":1}";
+    auto out = c.engine.submit(sub);
+    EXPECT_FALSE(out.ok);
+    EXPECT_EQ(out.error, mcco::ErrCode::BadRequest);
+}
+
 TEST(EngineAgentPredicates, ModeBWakeFailedActuationStaysConfirmingForEvidence) {
     // HID wake actuation is best-effort: a deeply sleeping host powers the
     // USB port off, so the keypress cannot succeed — but the §8.1.2 evidence

@@ -9,8 +9,11 @@ namespace mcco {
 // Closed command type enum (spec 12.2.1). Unknown types are rejected as
 // 400 bad_request; app_launch/app_quit are rejected pre-ledger with 409
 // agent_not_paired in Mode A (spec 12.3.1).
+// `Unlock` is a spec AMENDMENT (2026-09-30): types the device-stored unlock
+// password at the lock/login screen (spec fixes no such command; the ledger
+// parameters stay empty so the secret never reaches the durable stream).
 enum class CommandType : uint8_t {
-    Wake, Sleep, Restart, Shutdown, Lock, MacroExecute, AppLaunch, AppQuit
+    Wake, Sleep, Restart, Shutdown, Lock, Unlock, MacroExecute, AppLaunch, AppQuit
 };
 
 bool command_type_from_string(const char* s, CommandType& out);

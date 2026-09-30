@@ -366,6 +366,24 @@ bool ConfigStore::loadAdminPassword(std::string& salt_b64, std::string& hash_b64
     return !salt_b64.empty() && !hash_b64.empty();
 }
 
+bool ConfigStore::saveUnlockPassword(const std::string& password) {
+    if (password.empty()) return writeRecord("unlockpw", ""); // clear
+    JsonDocument doc;
+    doc["password"] = password; // ArduinoJson escapes; this is the plaintext
+    std::string out;            // store (see the header comment) — never logged.
+    serializeJson(doc, out);
+    return writeRecord("unlockpw", out);
+}
+
+bool ConfigStore::loadUnlockPassword(std::string& password) {
+    std::string tmp;
+    if (!readRecord("unlockpw", tmp) || tmp.empty()) return false;
+    JsonDocument doc;
+    if (deserializeJson(doc, tmp) || !doc.is<JsonObject>()) return false;
+    password = doc["password"] | "";
+    return !password.empty();
+}
+
 bool ConfigStore::persistPairing(const mcco::PairingStore& ps) {
     return writeRecord("pairing", ps.dump());
 }

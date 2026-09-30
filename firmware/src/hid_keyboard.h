@@ -48,6 +48,11 @@ public:
     // Emits each byte as press+release at inter_key_ms; ASCII subset only
     // (letters/digits/space/enter and common punctuation), other bytes skipped.
     bool typeText(const char* s, size_t len, uint32_t inter_key_ms);
+    // Unlock-command typing: unlike typeText, EVERY byte must be emitted —
+    // a silent skip would submit a wrong password at the login screen. The
+    // charset is validated printable ASCII at set time; any per-byte failure
+    // (unmappable char or USB drop) aborts immediately and reports false.
+    bool typePassword(const char* s, size_t len, uint32_t inter_key_ms);
     // Maps a core modifier name {ctrl,shift,alt,cmd} to its left-side HID
     // modifier usage (0xE0..0xE3); 0 if unknown.
     static uint8_t modifierUsage(const char* name);

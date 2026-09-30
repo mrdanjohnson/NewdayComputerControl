@@ -1245,6 +1245,68 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
         sendRaw(200, body);
         return;
     }
+    // ---- Unlock password management (unlock command amendment 2026-09-30).
+    // The password is WRITE-ONLY: PUT validates (printable ASCII 1..64 — the
+    // HID typer cannot emit other bytes) and stores it on the device for the
+    // `unlock` power command to type at the lock/login screen; GET returns
+    // ONLY whether one is configured; DELETE clears. The value never appears
+    // in any response, log, or ledger record.
+    if (req.path == "/api/v1/system/unlock_password") {
+        if (req.method == "GET") {
+            if (!roleCheck(mcco::Role::Read)) return;
+            std::string pw;
+            const bool set = ctx->config->loadUnlockPassword(pw);
+            JsonDocument resp;
+            resp["set"] = set;
+            sendJson(200, resp);
+            return;
+        }
+        if (req.method == "PUT") {
+            if (!roleCheck(mcco::Role::Admin)) return;
+            JsonDocument body;
+            if (deserializeJson(body, req.body) || !body.is<JsonObject>()) {
+                sendError(mcco::ErrCode::BadRequest);
+                return;
+            }
+            const char* pw = body["password"] | "";
+            const size_t len = strlen(pw);
+            bool printable = len >= 1 && len <= 64;
+            for (size_t i = 0; printable && i < len; i++) {
+                const uint8_t c = (uint8_t)pw[i];
+                if (c < 0x20 || c > 0x7E) printable = false; // HID ASCII table
+            }
+            if (!printable) {
+                sendError(mcco::ErrCode::BadRequest,
+                         "password must be 1-64 printable ASCII characters");
+                return;
+            }
+            if (!ctx->config->saveUnlockPassword(pw)) {
+                sendError(mcco::ErrCode::InternalError);
+                return;
+            }
+            ctx->log->write(mcco::LogCategory::Config, mcco::LogLevel::Info,
+                            "unlock_password_set", nullptr, request_id.c_str(), actor.c_str(),
+                            nullptr);
+            JsonDocument resp;
+            resp["set"] = true;
+            sendJson(200, resp);
+            return;
+        }
+        if (req.method == "DELETE") {
+            if (!roleCheck(mcco::Role::Admin)) return;
+            if (!ctx->config->saveUnlockPassword("")) {
+                sendError(mcco::ErrCode::InternalError);
+                return;
+            }
+            ctx->log->write(mcco::LogCategory::Config, mcco::LogLevel::Info,
+                            "unlock_password_cleared", nullptr, request_id.c_str(),
+                            actor.c_str(), nullptr);
+            sendRaw(204, "");
+            return;
+        }
+        sendError(mcco::ErrCode::NotFound);
+        return;
+    }
     if (req.method == "POST" && req.path.compare(0, 15, "/api/v1/system/") == 0) {
         if (!roleCheck(mcco::Role::Control)) return;
         std::string name = req.path.substr(15);
@@ -1253,14 +1315,16 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
             sendError(mcco::ErrCode::NotFound);
             return;
         }
-        // The convenience surface is exactly the five power commands (spec
-        // 12.1.1); anything else on this prefix stays 404 (closed surface).
+        // The convenience surface is exactly the six power commands (spec
+        // 12.1.1 + the 2026-09-30 unlock amendment); anything else on this
+        // prefix stays 404 (closed surface).
         switch (type) {
             case mcco::CommandType::Wake:
             case mcco::CommandType::Sleep:
             case mcco::CommandType::Restart:
             case mcco::CommandType::Shutdown:
             case mcco::CommandType::Lock:
+            case mcco::CommandType::Unlock:
                 break;
             default:
                 sendError(mcco::ErrCode::NotFound);

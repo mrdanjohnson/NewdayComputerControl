@@ -67,7 +67,7 @@ const char kOpenApiJson[] = R"json({
         "type": "object",
         "required": ["type"],
         "properties": {
-          "type": {"type": "string", "enum": ["wake", "sleep", "restart", "shutdown", "lock", "macro_execute", "app_launch", "app_quit"]},
+          "type": {"type": "string", "enum": ["wake", "sleep", "restart", "shutdown", "lock", "unlock", "macro_execute", "app_launch", "app_quit"]},
           "parameters": {"type": "object"},
           "idempotency_key": {"type": "string"}
         }
@@ -233,7 +233,12 @@ const char kOpenApiJson[] = R"json({
       "get": {"tags": ["commands"], "summary": "Single ledger record, latest revision (READ)", "parameters": [{"name": "command_id", "in": "path", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "record", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CommandRecord"}}}}, "404": {"$ref": "#/components/responses/NotFound"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
     },
     "/api/v1/system/{command}": {
-      "post": {"tags": ["commands"], "summary": "Convenience power routes (CONTROL): wake|sleep|restart|shutdown|lock; pure alias of POST /api/v1/commands", "parameters": [{"name": "command", "in": "path", "required": true, "schema": {"type": "string", "enum": ["wake", "sleep", "restart", "shutdown", "lock"]}}], "responses": {"202": {"description": "accepted"}, "403": {"$ref": "#/components/responses/Forbidden"}, "409": {"$ref": "#/components/responses/Error"}, "429": {"$ref": "#/components/responses/Error"}}}
+      "post": {"tags": ["commands"], "summary": "Convenience power routes (CONTROL): wake|sleep|restart|shutdown|lock|unlock; pure alias of POST /api/v1/commands. AMENDMENT (2026-09-30): unlock types the device-stored password at the lock/login screen (not session-gated — the agent is offline at the login window); it completes on screen_lock_changed{locked:false} evidence (unlock_confirmed).", "parameters": [{"name": "command", "in": "path", "required": true, "schema": {"type": "string", "enum": ["wake", "sleep", "restart", "shutdown", "lock", "unlock"]}}], "responses": {"202": {"description": "accepted"}, "403": {"$ref": "#/components/responses/Forbidden"}, "409": {"$ref": "#/components/responses/Error"}, "429": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/system/unlock_password": {
+      "get": {"tags": ["config"], "summary": "Whether an unlock password is configured (READ); the value is write-only and never returned", "responses": {"200": {"description": "{\"set\": true|false}"}, "401": {"$ref": "#/components/responses/Unauthorized"}}},
+      "put": {"tags": ["config"], "summary": "Set the unlock password (ADMIN; Web-UI session or key). Body {\"password\": \"1-64 printable ASCII\"}. Stored plaintext on the device for the unlock command to type; never logged, never in the ledger, never returned.", "responses": {"200": {"description": "set"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}}},
+      "delete": {"tags": ["config"], "summary": "Clear the unlock password (ADMIN)", "responses": {"204": {"description": "cleared"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
     },
     "/api/v1/macros": {
       "get": {"tags": ["macros"], "summary": "Macro list (READ)", "responses": {"200": {"description": "{macros[]}", "content": {"application/json": {"schema": {"type": "object", "properties": {"macros": {"type": "array", "items": {"$ref": "#/components/schemas/Macro"}}}}}}}, "401": {"$ref": "#/components/responses/Unauthorized"}}},

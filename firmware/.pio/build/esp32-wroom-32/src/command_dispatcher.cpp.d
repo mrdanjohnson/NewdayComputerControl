@@ -151,4 +151,7 @@
  lib/maccontrol_core/mc_status.h src/hid_keyboard.h src/log_sink.h \
  lib/maccontrol_core/mc_log.h lib/maccontrol_core/mc_engine.h \
  lib/maccontrol_core/mc_ids.h lib/maccontrol_core/mc_ledger.h \
- src/macro_runner.h src/power_probe.h
+ src/macro_runner.h src/nvs_config.h \
+ /Users/danieljohnson/.platformio/packages/framework-arduinoespressif32/libraries/Preferences/src/Preferences.h \
+ lib/maccontrol_core/mc_auth.h lib/maccontrol_core/mc_pairing.h \
+ src/power_probe.h

@@ -79,6 +79,16 @@ public:
     bool saveAdminPassword(const std::string& salt_b64, const std::string& hash_b64);
     bool loadAdminPassword(std::string& salt_b64, std::string& hash_b64); // false: unset
 
+    // Unlock password (spec AMENDMENT 2026-09-30): stored PLAINTEXT — the
+    // device must type it at the lock/login screen, so it cannot be hashed
+    // like the admin password. Write-only via the API (no GET ever returns
+    // it); it never appears in the ledger, logs, or UI readbacks. Exposure
+    // = physical flash access. Empty string clears. Passwords are validated
+    // printable ASCII at set time so the HID typer cannot silently skip a
+    // byte.
+    bool saveUnlockPassword(const std::string& password);
+    bool loadUnlockPassword(std::string& password); // false: unset
+
 private:
     bool readRecord(const char* key, std::string& payload);
     bool writeRecord(const char* key, const std::string& payload);

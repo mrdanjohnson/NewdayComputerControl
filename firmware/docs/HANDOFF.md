@@ -4,6 +4,43 @@ Read this first in a new session, then `firmware/AGENTS.md`, then the
 phase doc for the work at hand. Project root:
 `/Users/danieljohnson/Public/ESP32-MCA Command Loop Design/`
 
+## 2026-09-30 (latest): UNLOCK COMMAND — device-stored password, login_screen detection
+
+> Feature (user-driven): wake-from-sleep then password entry was a manual
+> two-step (wake button, wait, password macro). The password macro also
+> exposed the secret to ANY API-key holder (`GET /api/v1/macros` is READ).
+> Implemented the device-side unlock amendment end to end:
+> - `CommandType::Unlock` (mc_types): no parameters, 60 s deadline, NOT
+>   session-gated (the agent is offline at the login window — gating would
+>   make it useless exactly where needed).
+> - Engine: completes on `screen_lock_changed {locked:false}` →
+>   `unlock_confirmed` (covers both the lock screen and the post-login-window
+>   agent burst). Mode A → unconfirmed/hid_only. New native tests
+>   (UnlockCompletesOnScreenUnlockChanged / UnlockNotSessionGated /
+>   UnlockRejectsParameters) — 151/151.
+> - Storage: `ConfigStore::save/loadUnlockPassword` — PLAINTEXT NVS record
+>   ("unlockpw"); write-only by API design (no GET returns it; never logged;
+>   unlock commands carry no parameters so it never reaches the ledger).
+>   Charset validated printable ASCII 1-64 at set time.
+> - HID: `HidKeyboard::typePassword` — strict typer, any unmapped byte or USB
+>   drop ABORTS (never silently skips a password byte). Dispatcher branch:
+>   emulated replug first if the sleeping host cut USB power, then
+>   password+Enter, then complete_dispatch.
+> - API: `POST /api/v1/system/unlock` (CONTROL, via the generic power alias);
+>   `GET/PUT/DELETE /api/v1/system/unlock_password` (READ/ADMIN/ADMIN).
+>   OpenAPI amended (enum + path + description).
+> - Status: synthesized `mac.login_screen` in /api/v1/status (true only while
+>   agent live + screen locked; null at the pre-login window — declared
+>   offline is the discriminator there).
+> - Web UI: Unlock + "Wake & Log In" buttons (composite: wake → poll
+>   agent/status for screen_locked → unlock, 75 s cap); Settings card for the
+>   unlock password (write-only field + clear).
+> - Skill file updated with the unlock flow.
+> Verified live: GET {set:false}, non-ASCII 400, unlock without password →
+> `failed/no_password_configured`. AWAITING: user sets password in UI, runs
+> the sleep → Wake & Log In test, then DELETES the exposed
+> 'type password + enter' macro.
+
 ## 2026-09-30 (latest): WAKE CHORD = SPACEBAR TAP — modifier tap was silently broken
 
 > User report: the Wake power button never woke the host (a macro always had

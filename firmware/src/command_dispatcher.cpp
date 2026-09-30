@@ -10,6 +10,7 @@
 #include "mc_log.h"
 #include "mc_types.h"
 #include "macro_runner.h"
+#include "nvs_config.h"
 #include "power_probe.h"
 
 namespace {
@@ -163,6 +164,52 @@ void CommandDispatcher::taskEntry(void* arg) {
             ctx->log->write(mcco::LogCategory::Command,
                             ok ? mcco::LogLevel::Info : mcco::LogLevel::Error,
                             ok ? "agent_dispatch" : "agent_dispatch_failed", item.command_id,
+                            nullptr, nullptr, nullptr);
+            continue;
+        }
+
+        if (type == mcco::CommandType::Unlock) {
+            // Device-side unlock (amendment 2026-09-30): types the
+            // device-stored password at the lock/login screen. Deliberately
+            // NOT session-gated — at the true login window the agent is not
+            // running yet. The record completes on
+            // screen_lock_changed{locked:false} evidence (Mode B) or
+            // unconfirmed/hid_only (Mode A). The password is read from config
+            // here, used, and dropped — never logged or persisted to the
+            // ledger (unlock commands carry no parameters).
+            std::string password;
+            {
+                Guard g(ctx->engine_mutex);
+                if (!ctx->config->loadUnlockPassword(password)) {
+                    ctx->engine->fail_dispatch(item.command_id, "no_password_configured");
+                }
+            }
+            const mcco::CommandRecord* after = nullptr;
+            {
+                Guard g(ctx->engine_mutex);
+                after = ctx->engine->get(item.command_id);
+            }
+            if (!after || after->state == mcco::CommandState::Failed) {
+                ctx->log->write(mcco::LogCategory::Command, mcco::LogLevel::Warn,
+                                "unlock_not_configured", item.command_id, nullptr, nullptr,
+                                nullptr);
+                continue;
+            }
+            // A sleeping host may have cut USB power: same emulated replug as
+            // the wake chord before typing.
+            if (!ctx->hid->mounted()) ctx->hid->reconnectForUserWake(15000);
+            bool ok = false;
+            if (ctx->hid->mounted()) {
+                ok = ctx->hid->typePassword(password.c_str(), password.size(), 25);
+                if (ok) ok = ctx->hid->typePassword("\n", 1, 0); // Enter submits
+            }
+            {
+                Guard g(ctx->engine_mutex);
+                ctx->engine->complete_dispatch(item.command_id, ok);
+            }
+            ctx->log->write(mcco::LogCategory::Command,
+                            ok ? mcco::LogLevel::Info : mcco::LogLevel::Error,
+                            ok ? "unlock_typed" : "unlock_typing_failed", item.command_id,
                             nullptr, nullptr, nullptr);
             continue;
         }

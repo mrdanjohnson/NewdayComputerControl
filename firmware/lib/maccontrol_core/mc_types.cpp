@@ -9,6 +9,7 @@ bool command_type_from_string(const char* s, CommandType& out) {
     else if (v == "restart") out = CommandType::Restart;
     else if (v == "shutdown") out = CommandType::Shutdown;
     else if (v == "lock") out = CommandType::Lock;
+    else if (v == "unlock") out = CommandType::Unlock;
     else if (v == "macro_execute") out = CommandType::MacroExecute;
     else if (v == "app_launch") out = CommandType::AppLaunch;
     else if (v == "app_quit") out = CommandType::AppQuit;
@@ -23,6 +24,7 @@ const char* command_type_to_string(CommandType t) {
         case CommandType::Restart: return "restart";
         case CommandType::Shutdown: return "shutdown";
         case CommandType::Lock: return "lock";
+        case CommandType::Unlock: return "unlock";
         case CommandType::MacroExecute: return "macro_execute";
         case CommandType::AppLaunch: return "app_launch";
         case CommandType::AppQuit: return "app_quit";
@@ -102,6 +104,7 @@ uint32_t default_deadline_s(CommandType t) {
         case CommandType::Restart: return 180;
         case CommandType::Shutdown: return 120;
         case CommandType::Lock: return 15;
+        case CommandType::Unlock: return 60; // typing + login animation
         case CommandType::MacroExecute: return 65; // macro timeout 60 + 5 (spec 5.3.1)
         case CommandType::AppLaunch: return 30;
         case CommandType::AppQuit: return 30;

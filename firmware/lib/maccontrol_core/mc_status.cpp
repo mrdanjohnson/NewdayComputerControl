@@ -108,6 +108,18 @@ void build_status(JsonDocument& doc, const Identity& id, bool usb_up,
     else tuple_str(mac, "state", agent->system_state.c_str(), Source::AgentReported,
                    agent->system_at, int(agent->stale_threshold_s),
                    agent_freshness(agent, agent->system_at, now));
+    // Synthesized (amendment 2026-09-30): is the host at the password prompt
+    // interactable RIGHT NOW? True only when the agent channel is live AND
+    // reports the screen locked — the lock screen, where the agent answers
+    // because the user session is up. At the pre-login window the agent is
+    // offline, so this renders unknown; the declared expected-offline state
+    // and connection.agent are the discriminators there.
+    if (!agent || !agent->paired || !connected) {
+        tuple_null(mac, "login_screen");
+    } else {
+        tuple_bool(mac, "login_screen", agent->has_lock && agent->locked,
+                   Source::Inferred, now, -1, Freshness::Fresh);
+    }
     if (!agent || !agent->paired || !agent->has_lock) tuple_null(mac, "locked");
     else tuple_bool(mac, "locked", agent->locked, Source::AgentReported, agent->lock_at,
                     int(agent->stale_threshold_s),
