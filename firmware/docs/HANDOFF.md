@@ -4,6 +4,89 @@ Read this first in a new session, then `firmware/AGENTS.md`, then the
 phase doc for the work at hand. Project root:
 `/Users/danieljohnson/Public/ESP32-MCA Command Loop Design/`
 
+## 2026-09-30 (latest): WAKE CHORD = SPACEBAR TAP — modifier tap was silently broken
+
+> User report: the Wake power button never woke the host (a macro always had
+> to do it); only the keyboard re-enumerated. Root cause in
+> `HidKeyboard::send_once(Wake)`: the chord was `Keyboard.write(KEY_LEFT_SHIFT)`
+> — a modifier press+release in the same instant with zero duration and no
+> character. This host never treats a modifier-only micro-tap as a wake
+> event (the AT-08 "late-wake HID impossible" conclusion was partially this
+> artifact). User's space-containing macros woke the host reliably.
+> FIX: wake chord is now a 100 ms spacebar tap (press / 100 ms / release),
+> plus a 1 s settle after a successful `reconnectForUserWake` so the host's
+> HID driver is ready before the tap. Accepted cost: one space lands in the
+> focused app after wake (spec fixes no chords; the original shift tap was
+> chosen to avoid exactly that, but it never woke anything). Native 148/148,
+> both envs, flashed 2026-09-30 ~18:15Z. AWAITING user re-test of the Wake
+> button. AT-08 note if re-run: HID wake actuation now has a real chance of
+> working, so the wake phase may complete on agent evidence before the +90 s
+> human prompt.
+
+## 2026-09-30 (later): MACRO WAKE FROM SLEEP — emulated replug on explicit wake dispatch
+
+> User test: churchtech asleep 3 min → macro click → instant `usb_disconnected`
+> abort; physical unplug/replug → same macro woke the host. Device logs show
+> why: the host cuts USB port power ~8 s into sleep (`usb_detached` 8 s after
+> `agent_goodbye`), so the keyboard is truly un-mounted — polling cannot
+> recover it, and the automatic re-enumeration supervisor is (by design)
+> suppressed while the host sleeps. The replug re-enumerates on the sleeping
+> host (port power is still on) and the first keystroke wakes it like any USB
+> keyboard.
+>
+> FIX: `HidKeyboard::reconnectForUserWake(timeout_ms)` — toggles the USB
+> data-line pull-up (the electrical equivalent of the physical replug) and
+> polls up to the timeout for re-enumeration. Called from:
+> - `send_chord` (Wake) when the initial mount poll fails;
+> - `run_macro` once per macro, replacing the immediate `usb_disconnected`
+>   abort (logs `usb_wake_reconnect`, 15 s bound, honest
+>   `usb_disconnected`/`macro_timeout` fallback).
+> The sleep-time supervisor suppression is unchanged: automatic churn during
+> sleep would dark-wake the host; an explicit user wake WANTs that.
+> Native 148/148, both envs compile, flashed 2026-09-30 ~17:00Z.
+> AWAITING user re-test (sleep → wait → macro).
+
+## 2026-09-30 (later): MACRO-CLICK PANIC REBOOT — FIXED (HTTP task stack overflow during ledger compact)
+
+> Symptom (user report): every Web UI macro click hung, then the device
+> rebooted (bounce to signin, "Failed to fetch"); records died
+> `esp32_restarted`. 100% reproducible incl. a delay-only macro with zero HID
+> → crash was in the command-accept path, not HID.
+>
+> Diagnosis (serial triage markers + `-fstack-usage`):
+> - Panic = FreeRTOS **stack watchpoint on mc_http** ("stack watchpoint
+>   triggered (mc_http)"), caught in the context-switch path with a corrupted
+>   backtrace; the panic reason/register-dump lines were being lost to USB CDC
+>   drops — read the raw serial buffer, not grep-filtered tails.
+> - HWM markers: at `submit_macro_execute` entry only 1676 words free; inside
+>   `rewrite_filtered` the copy loop ran with **152 words (608 B) remaining**,
+>   and the post-rename `LittleFS.open(kPath, "a")` + unwind needed more →
+>   watchpoint. Peak usage ≈ 27.6 KB of the 28 KB (7168-word) HTTP stack.
+> - Root cause: the 2026-09-29 streaming `rewrite_filtered` keep-filter called
+>   `record_from_json` (full ArduinoJson parse) PER LINE — a much deeper
+>   call chain than the old whole-file `replace_all` — and with the ledger at
+>   capacity 128 (≈400 durable lines, ~150 KB) the exec request path peaked
+>   past the stack. The old build survived because its chain was shallower.
+>   LittleFS itself is fine (1.5 MB partition, 1.38 MB free — NOT a
+>   space problem).
+>
+> Fix:
+> 1. `http_api.cpp`: mc_http stack 7168 → **12288 words** (measured need
+>    7016 words; +20 KB heap at task creation, steady free heap ~100 KB).
+> 2. `mc_ledger.cpp compact()`: keep-filter is now a raw substring match on
+>    `"command_id":"<id>"` (unique random ids can't false-match; unparseable
+>    lines don't match any needle → kept verbatim, same semantics). No
+>    ArduinoJson per line → the compact chain is much shallower.
+> 3. Native 148/148, both envs compile. Verified on hardware: 3 consecutive
+>    macro executes (each forcing a full eviction+compact incl. the HID
+>    "search" macro mac_ADB3) — 202 Accepted every time, device stays up,
+>    records end honestly `unconfirmed/hid_only`.
+>
+> LESSON: any per-line JSON parse inside a storage rewrite is a stack-depth
+> hazard on a task that also serves HTTP; measure with
+> `uxTaskGetStackHighWaterMark(NULL)` markers, and read raw serial bytes —
+> the panic reason lines drop off USB CDC.
+
 ## 2026-09-30: PHASE 5 GATE COMPLETE — AT-07/08/09/06 green ×2 each, AT-11 core green (bench caveat), all fixes flashed
 
 > **Scoreboard (2026-09-29→30, target = churchtech Mac16,10, all on one

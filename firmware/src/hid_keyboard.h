@@ -12,12 +12,15 @@ public:
     // Sends the chord for a power/lock command type.
     //
     // IMPLEMENTATION DECISION (the spec fixes no chords): the wake chord is a
-    // left-shift *tap* — a modifier press+release wakes a sleeping Mac without
-    // injecting a character. lock = Ctrl+Cmd+Q. restart/shutdown use the USB
+    // 100 ms spacebar tap — the modifier-only tap it replaced was never
+    // detected as a wake event on the tested host, while printing keys wake
+    // it like any USB keyboard (2026-09-30). Cost: one space lands in the
+    // focused app after wake. lock = Ctrl+Cmd+Q. restart/shutdown use the USB
     // keyboard Power key (usage 0x66) with the noted modifiers. sleep has no
     // HID mechanism in Mode A (see hid_keyboard.cpp — Mode B sleep is
     // agent-executed); the wake chord signals USB remote wakeup first when
-    // the host has suspended the port.
+    // the host has suspended the port, and emulates an unplug/replug when
+    // the sleeping host cut port power (see reconnectForUserWake).
     //
     // Returns false if USB is not mounted: polls re-enumeration every 1 s for
     // up to 5 s (spec 15.1), retries the dispatch once, and gives up on the
@@ -63,6 +66,18 @@ public:
     // session stays live across darkwake heartbeats, so the session gate
     // alone never closes).
     bool serviceHostReconnect(bool agent_session_active, bool host_declared_offline);
+
+    // Emulated unplug/replug for an EXPLICIT user wake request (wake chord
+    // or macro dispatched while the host sleeps). A sleeping host cuts USB
+    // port power ~8 s into sleep (observed 2026-09-30: usb_detached), so the
+    // device is truly un-mounted and polling cannot recover it; physically
+    // replugging proves the host enumerates a fresh attach while asleep and
+    // the first keystroke then wakes it like any USB keyboard. This toggles
+    // the data-line pull-up the same way and waits up to timeout_ms for
+    // re-enumeration. The sleep-time suppression above does not apply here:
+    // waking is the whole point of the dispatch. Feeds the task watchdog
+    // while waiting. Returns true when re-mounted.
+    bool reconnectForUserWake(uint32_t timeout_ms);
 
 private:
     static bool wait_mounted();

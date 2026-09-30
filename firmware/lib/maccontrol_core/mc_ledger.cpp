@@ -213,13 +213,22 @@ void Ledger::compact() {
     // A failed rewrite keeps pending_evict_ so a later compact retries —
     // silently dropping the list here is how the durable stream used to
     // grow past capacity (evicted records reloaded and re-mirrored at boot).
-    // rewrite_filtered streams at O(1) heap on the device.
+    // rewrite_filtered streams at O(1) heap on the device. The keep filter
+    // is a raw substring match on the serialized command_id, not a full
+    // record_from_json per line: the deep ArduinoJson parse chain per line
+    // piled onto the caller's stack (measured 27.6 KB peak on the 28 KB HTTP
+    // task — stack-watchpoint panic 2026-09-30). command_ids are unique
+    // random tokens, so `"command_id":"<id>"` cannot false-match another
+    // record; lines that don't parse (kept verbatim per load() semantics)
+    // won't contain a victim's id either.
+    std::vector<std::string> needles;
+    needles.reserve(pending_evict_.size());
+    for (const auto& id : pending_evict_) {
+        needles.push_back(std::string("\"command_id\":\"") + id + "\"");
+    }
     const bool ok = storage_.rewrite_filtered([&](const std::string& line) {
-        CommandRecord rec;
-        if (record_from_json(line, rec)) {
-            for (const auto& id : pending_evict_) {
-                if (id == rec.command_id) return false;
-            }
+        for (const auto& n : needles) {
+            if (line.find(n) != std::string::npos) return false;
         }
         return true;
     });

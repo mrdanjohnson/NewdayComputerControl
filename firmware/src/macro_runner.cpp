@@ -142,9 +142,22 @@ void run_macro(AppContext* ctx, const char* command_id) {
     const uint32_t start_ms = millis();
     const uint32_t budget_ms = macro.timeout_ms;
 
+    bool wake_reconnect_tried = false;
     for (const mcco::MacroStep& step : steps) {
         // Abort conditions checked before every step (spec 10.3.1).
         if (!ctx->hid->mounted()) {
+            // A sleeping host cuts USB power (usb_detached ~8 s into sleep),
+            // so a dispatched-while-asleep macro finds no keyboard. Polling
+            // cannot recover that; do the emulated replug ONCE (the physical
+            // equivalent wakes the host via the first keystroke), then fall
+            // back to the honest abort if enumeration does not come back.
+            if (!wake_reconnect_tried) {
+                wake_reconnect_tried = true;
+                ctx->log->write(mcco::LogCategory::Command, mcco::LogLevel::Info,
+                                "usb_wake_reconnect", command_id, nullptr, nullptr,
+                                nullptr);
+                if (ctx->hid->reconnectForUserWake(15000)) continue;
+            }
             abort_macro(ctx, command_id, "usb_disconnected");
             return;
         }

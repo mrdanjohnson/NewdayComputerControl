@@ -294,7 +294,7 @@ void HttpApi::begin(AppContext* ctx, uint16_t port) {
     g_write_ctx = ctx;
     server_ = new WiFiServer(port);
     server_->begin();
-    xTaskCreate(taskEntry, "mc_http", 7168, this, 5, &task_);
+    xTaskCreate(taskEntry, "mc_http", 12288, this, 5, &task_);
     esp_task_wdt_add(task_);
 }
 

@@ -1,5 +1,6 @@
 #include "hid_keyboard.h"
 #include <Arduino.h>
+#include <esp_task_wdt.h>
 #include <string.h>
 
 // Classic ESP32 (ESP32/ESP32-D0WD, e.g. ESP-WROOM-32) has no native USB
@@ -117,16 +118,46 @@ bool HidKeyboard::wait_mounted() {
 #endif
 }
 
+bool HidKeyboard::reconnectForUserWake(uint32_t timeout_ms) {
+#if MC_HAS_USB_HID
+    // See the header: a sleeping host cuts port power, so the device is
+    // truly detached — emulate the physical replug that provably
+    // re-enumerates (pull-up toggle), then poll for the host to enumerate us.
+    tud_disconnect();
+    delay(200);
+    tud_connect();
+    const uint32_t start = millis();
+    while (!tud_mounted() && millis() - start < timeout_ms) {
+        esp_task_wdt_reset();
+        delay(100);
+    }
+    return tud_mounted();
+#else
+    (void)timeout_ms;
+    return false;
+#endif
+}
+
 bool HidKeyboard::send_once(mcco::CommandType type) {
 #if MC_HAS_USB_HID
     uint8_t mods[3] = {0, 0, 0};
     uint8_t n_mods = 0;
     uint8_t key = 0;
     switch (type) {
-        case mcco::CommandType::Wake:
-            // Modifier tap: wakes a sleeping Mac without injecting a character.
-            key = KEY_LEFT_SHIFT;
-            break;
+        case mcco::CommandType::Wake: {
+            // Space tap. The original modifier-only tap (shift, press+release
+            // in the same instant, no character) was never detected by this
+            // host as a wake event — the user always fell back to a macro,
+            // and space-containing macros woke it reliably (2026-09-30).
+            // A printing key also gives the press a real duration (100 ms),
+            // closer to a physical keypress than write()'s zero-gap tap.
+            // Cost: one space lands in whatever app is focused after wake.
+            Keyboard.releaseAll();
+            Keyboard.press(' ');
+            delay(100);
+            Keyboard.release(' ');
+            return true;
+        }
         case mcco::CommandType::Lock:
             mods[0] = KEY_LEFT_CTRL;
             mods[1] = KEY_LEFT_GUI;
@@ -168,7 +199,16 @@ bool HidKeyboard::send_once(mcco::CommandType type) {
 
 bool HidKeyboard::send_chord(mcco::CommandType type) {
 #if MC_HAS_USB_HID
-    if (!wait_mounted()) return false;
+    if (!wait_mounted()) {
+        // Polling alone cannot recover a device the sleeping host powered
+        // down (usb_detached ~8 s into sleep). An explicit WAKE dispatch
+        // emulates the user's physical replug instead (proven to enumerate
+        // on a sleeping host; the chord then wakes it like any keyboard).
+        if (type == mcco::CommandType::Wake) {
+            if (reconnectForUserWake(10000)) delay(1000); // let the host's HID driver attach before the tap
+        }
+        if (!wait_mounted()) return false;
+    }
     if (type == mcco::CommandType::Wake) {
         // Wake gets the remote-wakeup diagnostics (read by the dispatcher
         // into the device log); other chords resume silently.
