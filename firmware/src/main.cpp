@@ -22,6 +22,7 @@
 #include "mc_rate_limit.h"
 #include "mdns_service.h"
 #include "nvs_config.h"
+#include "ota.h"
 #include "status_cache.h"
 #include "trigger_store.h"
 #include "usb_link.h"
@@ -357,6 +358,11 @@ void setup() {
     // server's TX/JSON allocations (see setup() top).
     if (heap_canary) heap_caps_free(heap_canary);
 
+    // OTA self-check state (spec 15.3): detect a pending-verify boot (post-
+    // apply 60 s window) or a reverted boot (sibling slot invalidated) before
+    // the HTTP surface opens.
+    ota::begin(&ctx);
+
     g_http.begin(&ctx, 80);
 
     Serial.printf("init complete in %u ms\n", (unsigned)(millis() - boot_start_ms));
@@ -372,6 +378,12 @@ void loop() {
     } catch (...) {
         Serial.println("error: command failed");
     }
+
+    // OTA post-apply self-check (spec 15.3): confirm the new slot on the
+    // first successful status serve, or roll back when the 60 s window
+    // expires. The pending state itself lives in the otadata partition (the
+    // bootloader rollback mechanism) — no NVS flag needed.
+    ota::tick(&ctx);
 
     // Lazily persist key last_used_at mutations. Throttled: touch() is
     // quantized to 60 s so polling only dirties the store once a minute, and

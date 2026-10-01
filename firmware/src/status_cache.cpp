@@ -116,6 +116,14 @@ void StatusCache::buildStatus(JsonDocument& doc) const {
         paired = ctx_->pairing && ctx_->pairing->paired();
     }
     mcco::build_status(doc, id, usb, net, probe_at, id_at, paired ? &agent : nullptr, now, epoch);
+    // Firmware version (spec 15.3: the running version is recorded in
+    // GET /api/v1/status so controllers can attribute behavior to revisions).
+    // Build-defined constant, so the tuple is esp32_direct/fresh by construction.
+#ifndef MC_FW_VERSION
+#define MC_FW_VERSION "dev"
+#endif
+    mcco::tuple_str(doc["device"].as<JsonObject>(), "firmware_version", MC_FW_VERSION,
+                    mcco::Source::Esp32Direct, now, -1, mcco::Freshness::Fresh);
 }
 
 void StatusCache::buildCapabilities(JsonDocument& doc) const {

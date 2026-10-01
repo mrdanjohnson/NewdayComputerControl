@@ -24,6 +24,7 @@
 #include "mc_sha256.h"
 #include "mdns_service.h"
 #include "nvs_config.h"
+#include "ota.h"
 #include "status_cache.h"
 #include "trigger_store.h"
 #include "usb_link.h"
@@ -399,6 +400,122 @@ static bool writeFully(WiFiClient& client, const char* data, size_t len) {
     return true;
 }
 
+// Deterministic error envelope for paths that answer before the shared
+// response lambdas exist (the OTA upload intercept). Byte-compatible with
+// sendError(): same JSON field order, same http_error log line.
+static void sendApiError(AppContext* ctx, WiFiClient& client, mcco::ErrCode code,
+                         const char* message, const std::string& request_id,
+                         bool close_conn, bool keepalive) {
+    char body[384];
+    const int n = snprintf(body, sizeof(body), "{\"error\":{\"code\":\"%s\",\"message\":\"",
+                           mcco::error_code_string(code));
+    snprintf(body + n, sizeof(body) - (size_t)n, "%s\",\"request_id\":\"%s\"}}",
+             message ? message : mcco::default_error_message(code), request_id.c_str());
+    char hdr[224];
+    const char* conn = close_conn ? "close" : (keepalive ? "keep-alive" : "close");
+    const int hl = snprintf(hdr, sizeof(hdr),
+                            "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\n"
+                            "Content-Length: %u\r\nConnection: %s\r\nX-Request-Id: %s\r\n\r\n",
+                            mcco::error_http_status(code), reasonPhrase(mcco::error_http_status(code)),
+                            (unsigned)strlen(body), conn, request_id.c_str());
+    writeFully(client, hdr, (size_t)hl);
+    writeFully(client, body, strlen(body));
+    client.flush();
+    ctx->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Warn, "http_error", nullptr,
+                    request_id.c_str(), nullptr, nullptr);
+}
+
+// Authenticate an /api/v1/* request (spec 13.1.1): Web UI session cookie,
+// failed-auth lockout, API key validation, per-key rate limit, last-used
+// attribution. Extracted from handleClient so the OTA upload intercept can
+// authenticate BEFORE the body is consumed. On failure the deterministic
+// envelope is written and false is returned. `close_conn` forces
+// Connection: close (the OTA endpoints always close).
+static bool apiAuthenticate(AppContext* ctx, const Request& req, const std::string& ip,
+                            const std::string& request_id, WiFiClient& client,
+                            mcco::Principal& principal, bool& session_auth,
+                            bool close_conn) {
+    session_auth = false;
+    // A valid mc_session cookie is treated as the ADMIN role for /api/v1/*
+    // calls made by the Web UI (spec ch. 14: the Web UI is bound to ADMIN).
+    // Session-authenticated calls bypass the per-key rate limiter and key
+    // last_used_at attribution (both are keyed to API keys, spec 13.1.1).
+    const std::string tok = cookieValue(req.cookie, "mc_session");
+    if (!tok.empty() && ctx->web_ui && ctx->web_ui->validateSession(tok)) {
+        principal.key_id = "webui";
+        principal.role = mcco::Role::Admin;
+        session_auth = true;
+    }
+    if (!session_auth) {
+        Guard g(g_auth_track_mutex);
+        AuthTrack& t = trackFor(ip.c_str());
+        if (t.lockout_until_ms != 0 && ctx->clock->millis() < t.lockout_until_ms) {
+            sendApiError(ctx, client, mcco::ErrCode::Unauthorized, nullptr, request_id,
+                         close_conn, req.keepalive);
+            return false;
+        }
+        if (t.lockout_until_ms != 0) {
+            t.lockout_until_ms = 0;
+            t.consecutive_fails = 0;
+        }
+    }
+    if (!session_auth) {
+        std::string raw_key;
+        const std::string bearer = "Bearer ";
+        if (req.auth.compare(0, bearer.size(), bearer) == 0)
+            raw_key = trim(req.auth.substr(bearer.size()));
+        else
+            raw_key = trim(req.api_key); // X-API-Key fallback credential
+
+        mcco::AuthResult auth =
+            ctx->keys->authenticate(raw_key, ctx->clock->epoch_seconds(), principal);
+        if (auth != mcco::AuthResult::Ok) {
+            Guard g(g_auth_track_mutex);
+            AuthTrack& t = trackFor(ip.c_str());
+            ++t.consecutive_fails;
+            if (t.consecutive_fails >= 10) {
+                t.lockout_until_ms = ctx->clock->millis() + 60000;
+                t.consecutive_fails = 0;
+                ctx->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Warn, "auth_lockout",
+                                nullptr, request_id.c_str(), (std::string("ip:") + ip).c_str(),
+                                nullptr);
+            } else {
+                ctx->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Warn, "auth_failed",
+                                nullptr, request_id.c_str(), (std::string("ip:") + ip).c_str(),
+                                nullptr);
+            }
+            if (auth == mcco::AuthResult::Revoked) {
+                sendApiError(ctx, client, mcco::ErrCode::Forbidden, nullptr, request_id,
+                             close_conn, req.keepalive);
+            } else {
+                // missing/invalid or expired — the message doubles as the
+                // usage hint (only Bearer parsed here used to cost an hour).
+                sendApiError(ctx, client, mcco::ErrCode::Unauthorized,
+                             "authenticate with Authorization: Bearer <key> or X-API-Key: <key>",
+                             request_id, close_conn, req.keepalive);
+            }
+            return false;
+        }
+    }
+    {
+        Guard g(g_auth_track_mutex);
+        AuthTrack& t = trackFor(ip.c_str());
+        t.consecutive_fails = 0;
+    }
+    if (!session_auth) {
+        if (!ctx->limiter->allow(principal.key_id, principal.role)) {
+            sendApiError(ctx, client, mcco::ErrCode::RateLimited, nullptr, request_id,
+                         close_conn, req.keepalive);
+            return false;
+        }
+        // Mark key use (attribution, spec 13.1.1), quantized to 60 s inside
+        // touch(): only a real change dirties the store for the lazy persist.
+        if (ctx->keys->touch(principal.key_id, ctx->clock->epoch_seconds()))
+            ctx->keys_dirty = true;
+    }
+    return true;
+}
+
 void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
     AppContext* ctx = ctx_;
     // Feed here as well: this task's watchdog is otherwise only reset in
@@ -523,6 +640,37 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
         writeFully(client, hdr_buf_, (size_t)hl < sizeof(hdr_buf_) ? (size_t)hl
                                                                    : sizeof(hdr_buf_) - 1);
     };
+    const std::string ip = client.remoteIP().toString().c_str();
+
+    // ---- OTA upload (spec 15.3): intercepted BEFORE the body accumulation —
+    // the signed container (64-byte signature || image, megabytes) streams
+    // socket -> flash in ~4 KB chunks and must never sit in the capped request
+    // buffer or the 320 KB heap (AGENTS.md). Authenticated inline with the
+    // same helper the routed surface uses; the response is Connection: close.
+    if (req.method == "POST" && req.path == "/api/v1/ota/upload") {
+        // Every response on this path is Connection: close.
+        last_keepalive_ = false;
+        if (!ctx->wifi->connected()) {
+            sendApiError(ctx, client, mcco::ErrCode::NetworkUnavailable, nullptr, request_id,
+                         /*close_conn=*/true, req.keepalive);
+            return;
+        }
+        mcco::Principal ota_principal;
+        bool ota_session = false;
+        if (!apiAuthenticate(ctx, req, ip, request_id, client, ota_principal, ota_session,
+                             /*close_conn=*/true))
+            return;
+        if (!mcco::role_at_least(ota_principal.role, mcco::Role::Admin)) {
+            sendApiError(ctx, client, mcco::ErrCode::Forbidden, nullptr, request_id,
+                         /*close_conn=*/true, req.keepalive);
+            return;
+        }
+        const std::string ota_actor =
+            ota_session ? "webui" : "apikey:" + ota_principal.key_id;
+        ota::handleUpload(ctx, client, content_length, request_id.c_str(),
+                          ota_actor.c_str());
+        return;
+    }
     if (content_length > kBodyCap) {
         // Body too large for the fixed parsing buffer: refuse cleanly.
         std::string body = "{\"error\":{\"code\":\"bad_request\",\"message\":\"Request body too "
@@ -602,8 +750,6 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
         writeFully(client, html, strlen(html));
         client.flush();
     };
-
-    const std::string ip = client.remoteIP().toString().c_str();
 
     // ---- Web UI document + session endpoints (spec ch. 14). GET / is a
     // document, never 401: the login form lives inside the page.
@@ -871,85 +1017,14 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
         return;
     }
 
-    // ---- Authentication + lockout + rate limit.
-    // A valid mc_session cookie is treated as the ADMIN role for /api/v1/*
-    // calls made by the Web UI (spec ch. 14: the Web UI is bound to ADMIN).
-    // Session-authenticated calls bypass the per-key rate limiter and key
-    // last_used_at attribution (both are keyed to API keys, spec 13.1.1).
+    // ---- Authentication + lockout + rate limit (shared with the OTA upload
+    // intercept; the session-cookie, lockout, limiter and attribution rules
+    // live in apiAuthenticate).
     mcco::Principal principal;
     bool session_auth = false;
-    {
-        const std::string tok = cookieValue(req.cookie, "mc_session");
-        if (!tok.empty() && ctx->web_ui && ctx->web_ui->validateSession(tok)) {
-            principal.key_id = "webui";
-            principal.role = mcco::Role::Admin;
-            session_auth = true;
-        }
-    }
-    if (!session_auth) {
-        Guard g(g_auth_track_mutex);
-        AuthTrack& t = trackFor(ip.c_str());
-        if (t.lockout_until_ms != 0 && ctx->clock->millis() < t.lockout_until_ms) {
-            sendError(mcco::ErrCode::Unauthorized);
-            return;
-        }
-        if (t.lockout_until_ms != 0) {
-            t.lockout_until_ms = 0;
-            t.consecutive_fails = 0;
-        }
-    }
-    if (!session_auth) {
-        std::string raw_key;
-        const std::string bearer = "Bearer ";
-        if (req.auth.compare(0, bearer.size(), bearer) == 0)
-            raw_key = trim(req.auth.substr(bearer.size()));
-        else
-            raw_key = trim(req.api_key); // X-API-Key fallback credential
-
-        mcco::AuthResult auth =
-            ctx->keys->authenticate(raw_key, ctx->clock->epoch_seconds(), principal);
-        if (auth != mcco::AuthResult::Ok) {
-            Guard g(g_auth_track_mutex);
-            AuthTrack& t = trackFor(ip.c_str());
-            ++t.consecutive_fails;
-            if (t.consecutive_fails >= 10) {
-                t.lockout_until_ms = ctx->clock->millis() + 60000;
-                t.consecutive_fails = 0;
-                ctx->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Warn, "auth_lockout",
-                                nullptr, request_id.c_str(), (std::string("ip:") + ip).c_str(),
-                                nullptr);
-            } else {
-                ctx->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Warn, "auth_failed",
-                                nullptr, request_id.c_str(), (std::string("ip:") + ip).c_str(),
-                                nullptr);
-            }
-            if (auth == mcco::AuthResult::Revoked) {
-                sendError(mcco::ErrCode::Forbidden);
-            } else {
-                // missing/invalid or expired — the message doubles as the
-                // usage hint (only Bearer parsed here used to cost an hour).
-                sendError(mcco::ErrCode::Unauthorized,
-                          "authenticate with Authorization: Bearer <key> or X-API-Key: <key>");
-            }
-            return;
-        }
-    }
-    {
-        Guard g(g_auth_track_mutex);
-        AuthTrack& t = trackFor(ip.c_str());
-        t.consecutive_fails = 0;
-    }
-    if (!session_auth) {
-        if (!ctx->limiter->allow(principal.key_id, principal.role)) {
-            sendError(mcco::ErrCode::RateLimited);
-            return;
-        }
-
-        // Mark key use (attribution, spec 13.1.1), quantized to 60 s inside
-        // touch(): only a real change dirties the store for the lazy persist.
-        if (ctx->keys->touch(principal.key_id, ctx->clock->epoch_seconds()))
-            ctx->keys_dirty = true;
-    }
+    if (!apiAuthenticate(ctx, req, ip, request_id, client, principal, session_auth,
+                         /*close_conn=*/false))
+        return;
 
     const std::string actor = session_auth ? "webui" : "apikey:" + principal.key_id;
     auto roleCheck = [&](mcco::Role need) -> bool {
@@ -972,9 +1047,14 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
             JsonDocument doc;
             ctx->status_cache->buildStatus(doc);
             sendJson(200, doc);
+            ota::noteStatusServed(ctx);
             return;
         }
         sendJson(200, status_doc_);
+        // Spec 15.3: the post-apply self-check completes on the first
+        // successful status serve (the explicit confirmation write happens in
+        // ota::tick once the Wi-Fi association is up).
+        ota::noteStatusServed(ctx);
         return;
     }
     if (req.method == "GET" && req.path == "/api/v1/capabilities") {
@@ -1994,6 +2074,40 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
         sendJson(out.http_status, resp);
         if (out.dispatch_pending) ctx->dispatcher->enqueue(out.record.command_id);
         return;
+    }
+
+    // ---- OTA (spec 15.3). Upload is intercepted before body accumulation
+    // (above); these two routes use the normal request path. All three are
+    // ADMIN-gated (ota/status is READ), rate-limited via the shared limiter.
+    if (req.method == "GET" && req.path == "/api/v1/ota/status") {
+        if (!roleCheck(mcco::Role::Read)) return;
+        char body[192];
+        ota::statusJson(body, sizeof(body));
+        sendRaw(200, body);
+        return;
+    }
+    if (req.method == "POST" && req.path == "/api/v1/ota/apply") {
+        if (!roleCheck(mcco::Role::Admin)) return;
+        bool force = false;
+        if (!ota::parseApplyBody(req.body, force)) {
+            sendError(mcco::ErrCode::BadRequest, "expected {\"force\":true|false}");
+            return;
+        }
+        char body[96];
+        mcco::ErrCode ota_err = mcco::ErrCode::InternalError;
+        if (!ota::apply(ctx, force, request_id.c_str(), actor.c_str(), body,
+                        sizeof(body), ota_err)) {
+            sendError(ota_err);
+            return;
+        }
+        // 200 first, then set the pending boot and restart (spec 15.3).
+        // Connection: close keeps the keep-alive state machine simple.
+        req.keepalive = false;
+        last_keepalive_ = false;
+        sendRaw(200, body);
+        client.flush();
+        ota::rebootNow();
+        return; // unreachable
     }
 
     // Closed surface: anything not listed above is 404 not_found (spec 13.3).

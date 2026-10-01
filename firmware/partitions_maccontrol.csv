@@ -1,0 +1,21 @@
+# MacControl partition table — ESP32-S3 devkitc (8 MB flash, no PSRAM).
+#
+# PRD 15.3 layout: factory recovery image + two OTA slots + LittleFS.
+# The S3 app image is ~1.4 MB and growing, so every app slot is 0x1F0000
+# (~1.94 MB). LittleFS (mounted as the data/spiffs partition by
+# LittleFS.begin(), see src/main.cpp) keeps 0x210000 — larger than the
+# default_8MB table's 0x180000 spiffs region it replaces, so keys + ledger
+# keep their headroom.
+#
+# esp32-wroom-32 (4 MB) CANNOT fit three app slots: it keeps the stock
+# min_spiffs.csv (two 0x1E0000 OTA slots, no factory) — factory recovery is
+# an S3-only layout (see the mc_openapi.cpp amendment note).
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+factory,    app,  factory,  0x10000,  0x1F0000,
+ota_0,      app,  ota_0,    ,         0x1F0000,
+ota_1,      app,  ota_1,    ,         0x1F0000,
+spiffs,     data, spiffs,   ,         0x210000,
+coredump,   data, coredump, ,         0x10000,

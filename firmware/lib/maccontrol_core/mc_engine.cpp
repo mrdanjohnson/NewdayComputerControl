@@ -1047,6 +1047,35 @@ size_t CommandEngine::reconcile_boot() {
     return n;
 }
 
+size_t CommandEngine::count_non_terminal() const {
+    size_t n = 0;
+    for (const CommandRecord* rec : ledger_.list_newest_first()) {
+        if (!is_terminal(rec->state)) n++;
+    }
+    return n;
+}
+
+size_t CommandEngine::terminate_all_non_terminal() {
+    // Same record mutation reconcile_boot() applies to non-resumable in-flight
+    // records (spec 15.3 force-apply): failed/esp32_restarted, one revision
+    // each, side state dropped.
+    size_t n = 0;
+    std::vector<std::string> ids;
+    for (const CommandRecord* rec : ledger_.list_newest_first()) ids.push_back(rec->command_id);
+    for (auto it = ids.rbegin(); it != ids.rend(); ++it) {
+        const CommandRecord* cur = ledger_.latest(*it);
+        if (!cur || is_terminal(cur->state)) continue;
+        CommandRecord next = *cur;
+        next.state = CommandState::Failed;
+        next.error_code = "esp32_restarted";
+        if (ledger_.append_revision(next)) {
+            drop_side(*it);
+            n++;
+        }
+    }
+    return n;
+}
+
 const CommandRecord* CommandEngine::get(const std::string& command_id) const {
     return ledger_.latest(command_id);
 }

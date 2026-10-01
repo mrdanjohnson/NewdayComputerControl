@@ -18,6 +18,7 @@ int error_http_status(ErrCode c) {
         case ErrCode::ValidationFailed: return 400;
         case ErrCode::MacroInvalidStep: return 400;
         case ErrCode::MacroQueueFull: return 409;
+        case ErrCode::OtaInProgress: return 409;
         case ErrCode::StoreCorrupt: return 409;
         case ErrCode::RateLimited: return 429;
         case ErrCode::InternalError: return 500;
@@ -43,6 +44,7 @@ const char* error_code_string(ErrCode c) {
         case ErrCode::ValidationFailed: return "validation_failed";
         case ErrCode::MacroInvalidStep: return "macro_invalid_step";
         case ErrCode::MacroQueueFull: return "macro_queue_full";
+        case ErrCode::OtaInProgress: return "ota_in_progress";
         case ErrCode::StoreCorrupt: return "store_corrupt";
         case ErrCode::RateLimited: return "rate_limited";
         case ErrCode::InternalError: return "internal_error";
@@ -68,6 +70,7 @@ const char* default_error_message(ErrCode c) {
         case ErrCode::ValidationFailed: return "Agent event envelope schema violation or unknown event type";
         case ErrCode::MacroInvalidStep: return "Invalid macro definition (step outside enums, forbidden expected_event)";
         case ErrCode::MacroQueueFull: return "Macro queue at capacity";
+        case ErrCode::OtaInProgress: return "An OTA operation is in progress, or commands are in flight";
         case ErrCode::StoreCorrupt: return "Macro store CRC failure";
         case ErrCode::RateLimited: return "Rate limit exceeded";
         case ErrCode::InternalError: return "Internal error";

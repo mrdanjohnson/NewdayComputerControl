@@ -146,14 +146,14 @@ def contract_openapi(checker, base, read_key):
     if "Error" in schemas:
         codes = (schemas["Error"].get("properties", {}).get("error", {})
                  .get("properties", {}).get("code", {}).get("enum") or [])
-        # Closed table: 19 codes implemented through Phase 4 (spec 12.3.1
-        # adds agent_offline/command_disabled/app_not_allowlisted/
+        # Closed table: 20 codes through Phase 6 (spec 12.3.1 adds
+        # agent_offline/command_disabled/app_not_allowlisted/
         # app_not_registered/app_control_disabled/validation_failed on top of
-        # the original 13). ota_in_progress arrives with Phase 6 OTA.
-        checker.check("error code table lists 19 closed codes", len(codes) == 19,
+        # the original 13, and ota_in_progress with the Phase 6 OTA surface).
+        checker.check("error code table lists 20 closed codes", len(codes) == 20,
                       f"len={len(codes)}")
-        checker.check("ota_in_progress absent until Phase 6",
-                      "ota_in_progress" not in codes, json.dumps(codes))
+        checker.check("ota_in_progress present (Phase 6 closed table, spec 12.3.1)",
+                      "ota_in_progress" in codes, json.dumps(codes))
 
 
 def contract_logs(checker, base, read_key):

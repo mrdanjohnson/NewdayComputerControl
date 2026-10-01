@@ -138,6 +138,19 @@ public:
     // failure completes it shutdown_confirmed. Returns the number advanced.
     size_t on_shutdown_probes(bool any_reachable);
 
+    // ---- OTA apply (spec 15.3) ----------------------------------------------
+    // Number of records whose latest revision is non-terminal. `apply` uses
+    // this for the 409 ota_in_progress gate while commands are in flight.
+    // Const; the caller holds engine_mutex.
+    size_t count_non_terminal() const;
+    // apply {force:true} termination (spec 15.3): EVERY non-terminal record
+    // is terminated failed/esp32_restarted BEFORE the reboot, reusing the
+    // exact verdict reconcile_boot() assigns non-resumable in-flight records —
+    // so the post-update ledger is identical to what boot reconciliation
+    // would have produced, and no command is silently abandoned by the
+    // firmware swap. The caller holds engine_mutex. Returns records advanced.
+    size_t terminate_all_non_terminal();
+
     // Glue support for the spec 8.2.2 corroboration probe (src/power_probe):
     // true while the probe phase is open — at least one shutdown record is
     // confirming with an expected-offline window whose close boundary has

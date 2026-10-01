@@ -23,12 +23,15 @@ in `.venv` themselves. The Mac agent runs from `../agent` with its own venv
 - `lib/maccontrol_core/` — pure C++17 spec logic; must compile on the host
   AND the device. No Arduino headers here, ever.
 - `src/` — Arduino glue. `http_api.cpp` (single-threaded HTTP + routing +
-  agent surface), `agent_link.cpp` (WS task, polling ingress, liveness),
+  agent surface + streamed OTA upload intercept), `agent_link.cpp` (WS task, polling ingress, liveness),
   `ws_server.cpp` (RFC 6455 codec), `command_dispatcher.cpp`,
   `mc_engine` wrapper in `main.cpp`, `nvs_config.cpp` (NVS + LittleFS),
   `log_sink.*` (static 128-slot RAM ring), `status_cache.cpp`,
   `usb_link.*` (USB device-link sensor), `power_probe.*` (shutdown
-  ICMP-echo corroboration, driven from the dispatcher tick).
+  ICMP-echo corroboration, driven from the dispatcher tick),
+  `ota.*` (spec 15.3 signed OTA: streamed upload, apply, self-check +
+  rollback; version marker `MCV1` embedded in every image),
+  `ota_pubkey.h` (generated compiled-in OTA public key).
 - `test/native/` — host tests; extend when you change `lib/` behavior.
 - `scripts/` — acceptance runners (`at*.py`, `mc_http.py` keep-alive helper,
   `serial_cli.py`). Gates need **two consecutive green runs on one boot**.

@@ -1,0 +1,22 @@
+# MacControl sdkconfig defaults (spec 15.3: automatic OTA rollback).
+#
+# CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE makes the bootloader boot a freshly
+# applied OTA image ONCE as pending: unless the app confirms itself with
+# esp_ota_mark_app_valid_cancel_rollback() within the 60 s self-check window
+# (src/ota.cpp), the next reset reverts to the previous VALID image. The
+# confirmation failure path calls esp_ota_mark_app_invalid_rollback_and_reboot().
+#
+# HOW THIS IS HONORED ON THIS BUILD
+# ---------------------------------
+# The pure-Arduino PlatformIO build (framework = arduino, platform
+# espressif32@6.x) links the IDF and the bootloader PRECOMPILED from
+# framework-arduinoespressif32; board_build.sdkconfig is only consumed by the
+# espidf builder, so this file is NOT fed into an arduino-only build. That is
+# fine: the Arduino core 2.0.17 sdkconfig that built the shipped bootloader
+# already sets both of the options below (verified in
+# ~/.platformio/packages/framework-arduinoespressif32/tools/sdk/{esp32,esp32s3}/sdkconfig,
+# and libapp_update.a exports esp_ota_mark_app_valid_cancel_rollback etc.).
+# Keep the settings here as the project-level record; a mixed
+# arduino,espidf build would consume them via board_build.sdkconfig.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+CONFIG_APP_ROLLBACK_ENABLE=y

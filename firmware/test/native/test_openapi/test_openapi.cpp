@@ -35,6 +35,9 @@ TEST(Openapi, CoversChapter12Paths) {
         "/api/v1/openapi.json",
         "/api/v1/apps/{bundle_id}/launch",
         "/api/v1/apps/{bundle_id}/quit",
+        "/api/v1/ota/status",
+        "/api/v1/ota/upload",
+        "/api/v1/ota/apply",
         "/agent/v1/pair",
         "/agent/v1/ws",
         "/agent/v1/events",
@@ -83,10 +86,16 @@ TEST(Openapi, ErrorEnvelopeAndLogEntrySchemas) {
     EXPECT_TRUE(schemas["LogEntry"].is<JsonObject>());
     EXPECT_TRUE(schemas["KeyRecord"].is<JsonObject>());
     EXPECT_TRUE(schemas["CommandRecord"].is<JsonObject>());
-    // The closed error-code table (spec 12.3.1) is enumerable from the doc.
+    // The closed error-code table (spec 12.3.1) is enumerable from the doc;
+    // 20 codes including ota_in_progress (spec 15.3, shipped in Phase 6).
     JsonArray codes = schemas["Error"]["properties"]["error"]["properties"]["code"]["enum"]
                           .as<JsonArray>();
-    EXPECT_EQ(codes.size(), 19u);
+    EXPECT_EQ(codes.size(), 20u);
+    bool has_ota = false;
+    for (JsonVariantConst c : codes) {
+        if (std::string(c | "") == "ota_in_progress") has_ota = true;
+    }
+    EXPECT_TRUE(has_ota);
 }
 
 TEST(Openapi, LogsParamsPresent) {

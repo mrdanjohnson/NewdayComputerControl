@@ -20,6 +20,7 @@ enum class ErrCode {
     ValidationFailed, // 400 validation_failed (spec 4.3.1 agent envelope)
     MacroInvalidStep, // 400 macro_invalid_step (spec 10.1.1)
     MacroQueueFull,   // 409 macro_queue_full (spec 10.3.1)
+    OtaInProgress,    // 409 ota_in_progress (spec 12.3.1 / 15.3)
     StoreCorrupt,     // 409 store_corrupt (spec 15.1)
     RateLimited,
     InternalError,
