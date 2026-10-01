@@ -4,6 +4,40 @@ Read this first in a new session, then `firmware/AGENTS.md`, then the
 phase doc for the work at hand. Project root:
 `/Users/danieljohnson/Public/ESP32-MCA Command Loop Design/`
 
+## Current state & next steps (2026-09-30 evening)
+
+> **State:** Phase 5 gate complete (AT-07/08/09/06 green ×2 each; AT-11 core
+> green with the bench-network WS caveat below). Today closed three
+> production regressions found through real use, and shipped the unlock
+> feature end to end. Firmware on the S3 (control-graphics) is current and
+> user-verified on every path: macros from UI/API, sleep → macro wake
+> (emulated replug), Wake button (spacebar chord), sleep/lock → Wake & Log
+> In (both the login-screen and straight-to-desktop branches). churchtech's
+> agent (ag-05e1) is healthy and self-reconnects. Native suite 151/151; both
+> envs compile. Today's firmware work is committed (`1a0b5c2` phase-1 fixes,
+> `04bbeb0` unlock feature); the Web UI wait-logic fix and this handoff edit
+> are the only uncommitted source changes.
+>
+> **Next steps, in order:**
+> 1. Commit the remaining bits (`firmware/src/web_ui_page.h` + this file).
+> 2. Refresh or retire `firmware/dist/esp32-s3/` — its `firmware.bin` is the
+>    stale 09-28 build; the flashed truth is `.pio/build/…/firmware.bin`.
+> 3. AT-11: re-run with the bench Mac's long-lived-WS path fixed (its outbound
+>    WS dies every ~30 s; polling from the same host is stable; churchtech's
+>    sessions survive an hour) — or formally accept the documented caveat.
+> 4. Phase 6 candidates (carry-over notes): accept `X-API-Key` or return a
+>    401 usage hint (only `Authorization: Bearer` parses today); validate
+>    `protocol_version` in hello before frame processing; monitored-app
+>    registry; OTA endpoints; ledger durable-stream growth policy (latest-
+>    revision-only compaction would need a spec amendment).
+> 5. Optional UI polish: an awake/asleep badge on the dashboard (all data
+>    already in `/api/v1/status` — `mac.state`, `mac.login_screen`,
+>    `connection.agent`).
+> 6. Building-rollout notes: Macs need auto-login or the gui-domain agent
+>    cannot start at boot; after any AT-06/AT-11 run the target agent needs
+>    re-pair + `launchctl kickstart -k gui/$(id -u)/com.maccontrol.agent`;
+>    the unlock password is per-device plaintext — set a per-site policy.
+
 ## 2026-09-30 (latest): UNLOCK COMMAND — device-stored password, login_screen detection
 
 > Feature (user-driven): wake-from-sleep then password entry was a manual
@@ -37,9 +71,14 @@ phase doc for the work at hand. Project root:
 >   unlock password (write-only field + clear).
 > - Skill file updated with the unlock flow.
 > Verified live: GET {set:false}, non-ASCII 400, unlock without password →
-> `failed/no_password_configured`. AWAITING: user sets password in UI, runs
-> the sleep → Wake & Log In test, then DELETES the exposed
-> 'type password + enter' macro.
+> `failed/no_password_configured`. User test (sleep → Wake & Log In) passed
+> in both branches: locked-then-slept → detected login screen → unlocked;
+> straight-to-desktop wake → UI fix 2026-09-30: the composite now treats
+> `screen_locked:false + logged_in:true` as immediate success instead of
+> waiting for a login screen that never comes (75 s cap only covers an
+> agent that never returns). The exposed `type password + Enter` macro
+> (mac_9374) was DELETED — its password was readable via GET /api/v1/macros
+> with any READ key; the device-stored unlock password replaces it.
 
 ## 2026-09-30 (latest): WAKE CHORD = SPACEBAR TAP — modifier tap was silently broken
 

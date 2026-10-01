@@ -386,9 +386,11 @@ async function powerCmd(name){
   }catch(e){showErr('err-global',e);}
 }
 // Wake & Log In composite: wake the host, then wait for the agent to come
-// back and report a locked screen (the password prompt) before unlocking.
-// Falls back to a message after 75 s so a host that wakes to the desktop
-// (no password) or loses its agent never hangs the button.
+// back and report a DEFINITIVE screen state. Both states terminate the
+// wait: screen_locked true → at the password prompt → unlock;
+// screen_locked false while logged in → the host woke straight to the
+// desktop (no password configured after sleep) → nothing to do. Only an
+// agent that never comes back burns the full deadline.
 async function wakeAndLogin(){
   el('powerresult').innerHTML='<span class="muted">Waking…</span>';
   try{await api('/api/v1/system/wake','POST',{});}catch(e){showErr('err-global',e);return;}
@@ -397,17 +399,23 @@ async function wakeAndLogin(){
     await new Promise(function(r){setTimeout(r,2000);});
     try{
       var s=await api('/api/v1/agent/status','GET');
-      if(s.session_active && s.user && s.user.screen_locked===true){
-        el('powerresult').innerHTML='<span class="muted">At login screen — unlocking…</span>';
-        try{
-          var r=await api('/api/v1/system/unlock','POST',{});
-          trackCommand(r,null);
-        }catch(e){showErr('err-global',e);}
-        return;
+      if(s.session_active && s.user){
+        if(s.user.screen_locked===true){
+          el('powerresult').innerHTML='<span class="muted">At login screen — unlocking…</span>';
+          try{
+            var r=await api('/api/v1/system/unlock','POST',{});
+            trackCommand(r,null);
+          }catch(e){showErr('err-global',e);}
+          return;
+        }
+        if(s.user.screen_locked===false && s.user.logged_in===true){
+          el('powerresult').innerHTML='<span class="muted">Mac woke to the unlocked desktop — no password needed.</span>';
+          return;
+        }
       }
     }catch(e){/* agent not back yet */}
     if(Date.now()>deadline){
-      el('powerresult').innerHTML='<span class="muted">No login screen detected — if the Mac is at a password prompt, press Unlock.</span>';
+      el('powerresult').innerHTML='<span class="muted">No agent response — if the Mac is at a password prompt, press Unlock.</span>';
       return;
     }
   }
