@@ -4,39 +4,55 @@ Read this first in a new session, then `firmware/AGENTS.md`, then the
 phase doc for the work at hand. Project root:
 `/Users/danieljohnson/Public/ESP32-MCA Command Loop Design/`
 
-## Current state & next steps (2026-09-30 evening)
+## Current state & next steps (2026-10-01)
 
-> **State:** Phase 5 gate complete (AT-07/08/09/06 green ×2 each; AT-11 core
-> green with the bench-network WS caveat below). Today closed three
-> production regressions found through real use, and shipped the unlock
-> feature end to end. Firmware on the S3 (control-graphics) is current and
-> user-verified on every path: macros from UI/API, sleep → macro wake
-> (emulated replug), Wake button (spacebar chord), sleep/lock → Wake & Log
-> In (both the login-screen and straight-to-desktop branches). churchtech's
-> agent (ag-05e1) is healthy and self-reconnects. Native suite 151/151; both
-> envs compile. Today's firmware work is committed (`1a0b5c2` phase-1 fixes,
-> `04bbeb0` unlock feature); the Web UI wait-logic fix and this handoff edit
-> are the only uncommitted source changes.
+> **State:** Phase 6 firmware is code-complete and host-verified, committed
+> as `13d4de2` (X-API-Key auth fallback + 401 usage hint, hello 4003 close
+> reason, PHASE6.md) and `5ccca55` (signed dual-partition OTA per spec 15.3,
+> at10.py/at12.py authored, at05.py 20-code pin, dist refreshed). Native
+> 156/156; both envs compile (S3 image 69.5% of its OTA slot). The Web UI
+> wait-logic fix and HANDOFF edit from 09-30 are inside `a481ec9`. **Nothing
+> is flashed** — the device still runs the 09-30 phase-5 binary.
+>
+> **The one decision that needs the user — flashing migrates storage:** the
+> new S3 partition table (`partitions_maccontrol.csv`: factory + ota_0/1 +
+> LittleFS) moves the LittleFS region, so the first flash **orphans the
+> on-device API keys, macros, triggers, and ledger** (NVS pairing/Wi-Fi/
+> identity/unlock-password at 0x9000 survive). Plan: back up if the ledger
+> matters (`esptool read_flash`), flash over the 'com' cable, re-provision
+> keys (serial CLI or `install.sh --provision`), re-create macros, re-pair
+> is NOT needed (NVS survives) but verify. Full forensics:
+> `docs/DEBUG-OTA.md`; phase log: `docs/PHASE6.md`.
 >
 > **Next steps, in order:**
-> 1. Commit the remaining bits (`firmware/src/web_ui_page.h` + this file).
-> 2. Refresh or retire `firmware/dist/esp32-s3/` — its `firmware.bin` is the
->    stale 09-28 build; the flashed truth is `.pio/build/…/firmware.bin`.
-> 3. AT-11: re-run with the bench Mac's long-lived-WS path fixed (its outbound
->    WS dies every ~30 s; polling from the same host is stable; churchtech's
->    sessions survive an hour) — or formally accept the documented caveat.
-> 4. Phase 6 candidates (carry-over notes): accept `X-API-Key` or return a
->    401 usage hint (only `Authorization: Bearer` parses today); validate
->    `protocol_version` in hello before frame processing; monitored-app
->    registry; OTA endpoints; ledger durable-stream growth policy (latest-
->    revision-only compaction would need a spec amendment).
-> 5. Optional UI polish: an awake/asleep badge on the dashboard (all data
->    already in `/api/v1/status` — `mac.state`, `mac.login_screen`,
->    `connection.agent`).
-> 6. Building-rollout notes: Macs need auto-login or the gui-domain agent
->    cannot start at boot; after any AT-06/AT-11 run the target agent needs
->    re-pair + `launchctl kickstart -k gui/$(id -u)/com.maccontrol.agent`;
->    the unlock password is per-device plaintext — set a per-site policy.
+> 1. Flash the S3 + re-provision (above), then network smoke: Web UI 200,
+>    clean 401s, `device.firmware_version` in `/api/v1/status`.
+> 2. OTA smoke over the air: `scripts/ota_sign.py sign` the built image with
+>    `firmware/keys/ota_dev.pem`, upload/apply via at12.py (or curl), verify
+>    reboot into the pending slot + 60 s self-check confirmation; then a
+>    deliberate rollback test (tampered image → 400; the deep
+>    unconfirmed-slot revert check stays DEFERRED).
+> 3. Live AT-10 (needs a registry-registered-but-not-allowlisted probe
+>    bundle on the target) and AT-12; then the Milestone 2 sweep: AT-05
+>    (updated pin), AT-06…AT-09, AT-11 ×2 — full re-run because the binary
+>    changed.
+> 4. AT-11 bench-WS caveat still open: re-run with the bench Mac's
+>    long-lived-WS path fixed (outbound WS dies ~30 s) or formally accept.
+> 5. Building-rollout notes (unchanged): Macs need auto-login for the
+>    gui-domain agent; after any AT-06/AT-11 run re-pair +
+>    `launchctl kickstart -k gui/$(id -u)/com.maccontrol.agent`; unlock
+>    password is per-device plaintext — set a per-site policy.
+> 6. Phase 6 leftovers (deferred, documented in PHASE6.md): Q-SYS/Companion
+>    modules (need target hardware), Ethernet (needs PHY add-on), monitored-
+>    app registry, ledger durable-stream growth policy (needs a spec
+>    amendment). Optional UI polish: awake/asleep dashboard badge.
+>
+> Carried-over 09-30 state (now history): Phase 5 gate complete (AT-07/08/
+> 09/06 green ×2; AT-11 core green with the bench-WS caveat); unlock feature,
+> spacebar wake chord, macro-wake replug all shipped and user-verified;
+> churchtech's agent (ag-05e1) healthy; 3 active keys (key-05 READ / key-06
+> CONTROL / key-07 ADMIN — probe-verified roles, NOT the listed order). Wake
+> button awaiting user re-test. See the dated 09-30 sections below.
 
 ## 2026-09-30 (latest): UNLOCK COMMAND — device-stored password, login_screen detection
 
@@ -876,6 +892,6 @@ python3 -m venv .venv && ./.venv/bin/pip install platformio   # if .venv missing
   `launchd/com.maccontrol.agent.plist`, README
 - `firmware/scripts/at01_at02.py`, `at03_at04.py`, `at05.py`, `at06.py`,
   `at11.py` — acceptance runners
-- `firmware/docs/PHASE1.md` … `PHASE5.md` (PHASE6 pending) —
-  per-phase build/verify guides + bring-up logs (`PHASE5.md` is the current
-  state; `PHASE4.5.md` the telemetry phase)
+- `firmware/docs/PHASE1.md` … `PHASE6.md` — per-phase build/verify guides +
+  bring-up logs (`PHASE6.md` is the current phase; `PHASE5.md` the verified
+  lifecycle gate; `PHASE4.5.md` the telemetry phase)

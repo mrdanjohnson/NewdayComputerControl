@@ -26,10 +26,10 @@
 | AT-11 bench-WS caveat | CARRY | re-run with bench long-lived-WS path fixed, or formally accept; not a Phase 6 blocker |
 | X-API-Key acceptance + 401 usage hint | DONE 2026-10-01 | HANDOFF carry-over; only `Authorization: Bearer` parsed before |
 | `protocol_version` hello validation | ALREADY DONE (pre-gate) | `AgentSession::acceptHello` closes 4003 ProtocolMismatch before any frame processing (`mc_agent_session.cpp`); added the missing close *reason* string 2026-10-01 |
-| Signed dual-partition OTA (§15.3) | IN PROGRESS | the big rock; nothing existed except the `Ota` log category |
-| AT-10 script (`at10.py`) | PENDING | allowlist + RBAC enforcement proof; enforcement code already exists (`AppNotAllowlisted`, `main.cpp` allowlist gate) |
-| AT-12 script (`at12.py`) | PENDING | idempotency replay + correlation-ID logging + signed OTA incl. rollback + ADMIN refusal |
-| `at05.py` OTA check | PENDING | pins "ota_in_progress absent until Phase 6" — must flip when OTA lands, then AT-05 re-runs in the Milestone 2 sweep |
+| Signed dual-partition OTA (§15.3) | DONE 2026-10-01 | streamed upload (socket→flash, never RAM), mbedTLS P-256 verify after write, slot abort on failure, bootloader rollback (already enabled in the core 2.0.17 precompiled bootloader — verified at build level; sdkconfig route is a dead end for pure-Arduino, see docs/DEBUG-OTA.md), MCV1 in-image version marker, `device.firmware_version` in status |
+| AT-10 script (`at10.py`) | AUTHORED 2026-10-01 | not yet live-run; needs a registry-registered-but-not-allowlisted probe bundle on the bench (spec 11.2.1 validates registry before allowlist) |
+| AT-12 script (`at12.py`) | AUTHORED 2026-10-01 | not yet live-run; signed-OTA legs were an honest red gate until `ota_sign.py` landed; deep unconfirmed-slot revert is DEFERRED (structural check only) |
+| `at05.py` OTA check | DONE 2026-10-01 | now pins 20 closed codes with `ota_in_progress` present; re-run in the Milestone 2 sweep |
 | Q-SYS / Companion modules | DEFERRED | integration consumers only; not gate-blocking; needs target hardware (Q-SYS Core / Companion host) to acceptance-test |
 | Ethernet | DEFERRED (hardware) | S3 devkitc has no onboard PHY; needs W5500-SPI or RMII add-on. Bench task + `platformio.ini` env work; documented, not gate-blocking |
 | Monitored-app registry | DEFERRED | carry-over note; later batch |
@@ -113,4 +113,37 @@ gui/$(id -u)/com.maccontrol.agent` is the permanent last step (HANDOFF).
 
 ## Log
 
-(nothing yet — entries append newest-first like other phase docs)
+### 2026-10-01: OTA + AT-10/AT-12 authored, host-verified, committed (5ccca55) — NOT flashed
+
+> Signed dual-partition OTA implemented per §15.3 and committed with the AT
+> scripts. Native 156/156 (5 new test_ota cases); both envs compile (S3 image
+> 1,412,569 B = 69.5 % of the 0x1F0000 slot; wroom 72.2 %). `ota_sign.py`
+> round-trip verified (sign→verify OK, flipped byte→FAIL). `dist/esp32-s3/`
+> refreshed (VERSION built 2026-10-01T14:23Z).
+>
+> **CAUTION — first flash migrates the partition table; the bench device
+> LOSES its LittleFS** (API keys, macros, triggers, ledger — new table moves
+> spiffs 0x670000→0x5E0000 region). NVS at 0x9000 (pairing, Wi-Fi, identity,
+> unlock password) survives. Re-provision keys after flashing (serial CLI or
+> `install.sh --provision`), and re-create macros. Back up first if the
+> ledger matters: `esptool read_flash 0x670000 0x180000 old_littlefs.bin`.
+> Forensics + the full rollback enablement story: `docs/DEBUG-OTA.md`.
+>
+> Deviations (all documented in the mc_openapi.cpp amendment note):
+> verify-after-write instead of verify-before-write (1.4 MB image vs 320 KB
+> RAM — same guarantee: bad image never bootable, running image never
+> erased); factory recovery slot is S3-only (4 MB wroom cannot fit three app
+> slots); bootloader rollback came already-enabled in the precompiled core
+> 2.0.17 bootloader — the `board_build.sdkconfig` hook does not exist for
+> pure-Arduino builds (verified dead end), sdkconfig.defaults is kept for a
+> future espidf-mixed build.
+>
+> Rollback self-check: 60 s window; confirmation = explicit
+> `esp_ota_mark_app_valid_cancel_rollback()` on first successful
+> `/api/v1/status` serve; timeout → `esp_ota_mark_app_invalid_rollback_and_reboot()`.
+> In-flight `Update.begin` slot erase can exceed the TWDT window — a worst-case
+> trip just reboots with the slot aborted and the client retries (DEBUG-OTA.md).
+>
+> Still owed for the Milestone 2 gate: flash the S3 (user decision — the
+> LittleFS migration above), re-provision, then live-run AT-05 (updated
+> 20-code pin), AT-10, AT-12, and the AT-06…AT-09 + AT-11 regression sweep ×2.

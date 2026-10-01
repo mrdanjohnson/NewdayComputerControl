@@ -245,13 +245,13 @@ MacControl_Deterministic_Architecture_Spec.md   the PRD (normative)
 ```
 MacControl_Deterministic_Architecture_Spec.md   the PRD (normative)
 firmware/          ESP32 firmware (PlatformIO) + docs/ + scripts/ + test/native/
-  docs/PHASE1.md — PHASE5.md     per-phase build/verify logs (PHASE5 is the
-    current state; read HANDOFF.md first)
+  docs/PHASE1.md — PHASE6.md     per-phase build/verify logs (PHASE6 is the
+    current phase; read HANDOFF.md first)
   docs/HANDOFF.md          resume document — status, landmines, conventions
   docs/DEBUG-*.md          post-mortems: radio death (PHASE4), stale mDNS
-    hostname after device rename, USB link detection
+    hostname after device rename, USB link detection, OTA partition migration
   dist/esp32-s3/           committed flash bundle used by agent/install.sh
-  scripts/at01_at02.py … at11.py   acceptance test runners
+  scripts/at01_at02.py … at12.py   acceptance test runners (+ ota_sign.py)
 agent/             MacControlAgent (Python) — see agent/README.md
 docx/              spec working documents
 ```
@@ -279,13 +279,14 @@ cd ../agent && python3 -m venv .venv && .venv/bin/pip install -r requirements.tx
 
 ## Testing
 
-- `./.venv/bin/pio test -e native` — 144 host-side tests over
+- `./.venv/bin/pio test -e native` — 156 host-side tests over
   `lib/maccontrol_core` (ledger, engine, RBAC, pairing, agent session,
-  status builders). Run before every flash.
+  status builders, OTA container/version logic). Run before every flash.
 - `pio run -e esp32-s3-devkitc-1` and `-e esp32-wroom-32` must both stay
   clean.
-- Acceptance: AT-01…AT-06, AT-11 per phase; each gate needs **two
-  consecutive green runs on one boot** (§16.1).
+- Acceptance: AT-01…AT-12 per phase; each gate needs **two
+  consecutive green runs on one boot** (§16.1). Milestone 2 (Phase 6 exit)
+  = AT-06 through AT-12 all green.
 
 ## Operating notes (the short list)
 

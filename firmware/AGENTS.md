@@ -7,7 +7,7 @@ work. This file captures what changes day-to-day; keep it in sync.
 ## Commands
 
 ```bash
-./.venv/bin/pio test -e native                 # 148 host tests — run before EVERY flash
+./.venv/bin/pio test -e native                 # 156 host tests — run before EVERY flash
 ./.venv/bin/pio run -e esp32-s3-devkitc-1      # primary target (S3)
 ./.venv/bin/pio run -e esp32-wroom-32          # classic ESP32 (no USB HID)
 ./.venv/bin/pio run -e esp32-s3-devkitc-1 -t upload   # flash (uses UART port)
@@ -33,11 +33,13 @@ in `.venv` themselves. The Mac agent runs from `../agent` with its own venv
   rollback; version marker `MCV1` embedded in every image),
   `ota_pubkey.h` (generated compiled-in OTA public key).
 - `test/native/` — host tests; extend when you change `lib/` behavior.
-- `scripts/` — acceptance runners (`at*.py`, `mc_http.py` keep-alive helper,
-  `serial_cli.py`). Gates need **two consecutive green runs on one boot**.
-- `docs/` — PHASE1–5 logs, `HANDOFF.md`, `DEBUG-PHASE4-AT11.md`,
+- `scripts/` — acceptance runners (`at*.py`, `ota_sign.py` OTA signing tool,
+  `mc_http.py` keep-alive helper, `serial_cli.py`). Gates need **two
+  consecutive green runs on one boot**.
+- `docs/` — PHASE1–6 logs, `HANDOFF.md`, `DEBUG-PHASE4-AT11.md`,
   `DEBUG-PHASE45-AT11.md`, `DEBUG-PHASE45-USB-LINK.md`,
-  `DEBUG-MDNS-STALE-NAME.md`.
+  `DEBUG-MDNS-STALE-NAME.md`, `DEBUG-OTA.md` (partition migration + rollback
+  enablement).
 
 ## Hard-won constraints (violating these has cost reboots)
 
@@ -104,6 +106,12 @@ in `.venv` themselves. The Mac agent runs from `../agent` with its own venv
   Also: **macOS wipes /tmp at boot** — AT state files live in /tmp; the
   phased AT scripts lose their chain state across a host reboot (the
   at08 chain accepts a hand-reconstructed state file; consider /var/tmp).
+- **The Phase 6 partition table moved LittleFS** (`partitions_maccontrol.csv`,
+  flashed 2026-10-01 onward): any device still on a pre-Phase-6 binary loses
+  its LittleFS (API keys, macros, triggers, ledger) at the migration flash —
+  NVS at 0x9000 (pairing, Wi-Fi, identity, unlock password) survives.
+  Re-provision keys after migrating; back up with `esptool read_flash`
+  first if the ledger matters. Forensics: `docs/DEBUG-OTA.md`.
 
 ## Docs to update when you change things
 
