@@ -457,7 +457,12 @@ void AgentLink::runWsSession(WsOffer offer, uint8_t* buf) {
         std::string detail = std::string("{\"close_code\":") + std::to_string(hello_cc) + "}";
         ctx_->log->write(mcco::LogCategory::Session, mcco::LogLevel::Warn, "agent_rejected",
                          nullptr, nullptr, nullptr, detail.c_str());
-        ws::send_close(client, hello_cc, nullptr);
+        // A reason string on 4003 saves the pairing-window round trip: the
+        // agent logs WHY it was refused (protocol negotiation, spec 4.2.1).
+        const char* close_reason =
+            hello_cc == uint16_t(mcco::AgentClose::ProtocolMismatch) ? "protocol_version 2 required"
+                                                                     : nullptr;
+        ws::send_close(client, hello_cc, close_reason);
         if (owned) delete mine; // else the superseder already released it
         return;
     }

@@ -64,6 +64,7 @@ struct Request {
     std::string query;
     std::string body;
     std::string auth;           // raw Authorization header value
+    std::string api_key;        // raw X-API-Key header value (fallback credential)
     std::string cookie;         // raw Cookie header value
     std::string idempotency_key; // Idempotency-Key header value
     std::string upgrade;        // raw Upgrade header value (WebSocket detection)
@@ -488,6 +489,8 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
                     content_length = (uint32_t)strtoul(value.c_str(), nullptr, 10);
                 } else if (name == "authorization") {
                     req.auth = value;
+                } else if (name == "x-api-key") {
+                    req.api_key = value;
                 } else if (name == "cookie") {
                     req.cookie = value;
                 } else if (name == "idempotency-key") {
@@ -900,6 +903,8 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
         const std::string bearer = "Bearer ";
         if (req.auth.compare(0, bearer.size(), bearer) == 0)
             raw_key = trim(req.auth.substr(bearer.size()));
+        else
+            raw_key = trim(req.api_key); // X-API-Key fallback credential
 
         mcco::AuthResult auth =
             ctx->keys->authenticate(raw_key, ctx->clock->epoch_seconds(), principal);
@@ -921,7 +926,10 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
             if (auth == mcco::AuthResult::Revoked) {
                 sendError(mcco::ErrCode::Forbidden);
             } else {
-                sendError(mcco::ErrCode::Unauthorized); // missing/invalid or expired
+                // missing/invalid or expired — the message doubles as the
+                // usage hint (only Bearer parsed here used to cost an hour).
+                sendError(mcco::ErrCode::Unauthorized,
+                          "authenticate with Authorization: Bearer <key> or X-API-Key: <key>");
             }
             return;
         }
