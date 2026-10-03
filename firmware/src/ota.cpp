@@ -132,6 +132,25 @@ bool readFully(WiFiClient& client, uint8_t* buf, size_t n, uint32_t deadline_ms)
     return true;
 }
 
+// Mixed byte source for the upload stream: bytes the request parser already
+// buffered past the header terminator are consumed first (`cursor` advances),
+// the remainder comes from the socket via readFully. Without this the
+// streamed read desyncs whenever the client sent headers+body in one flight
+// (bench finding: the device blocked until the client timed out, then logged
+// truncated_signature).
+bool readMixed(WiFiClient& client, const std::string& buffered, size_t& cursor,
+               uint8_t* buf, size_t n, uint32_t deadline_ms) {
+    if (cursor < buffered.size()) {
+        const size_t take = n < buffered.size() - cursor ? n : buffered.size() - cursor;
+        memcpy(buf, buffered.data() + cursor, take);
+        cursor += take;
+        buf += take;
+        n -= take;
+        if (n == 0) return true;
+    }
+    return readFully(client, buf, n, deadline_ms);
+}
+
 // ECDSA P-256 verify of the image digest against the compiled-in public key.
 // mbedTLS only (device-side; the host check is scripts/ota_sign.py verify).
 bool verifySignature(const uint8_t digest[32], const uint8_t sig[64]) {
@@ -253,7 +272,7 @@ void noteStatusServed(AppContext* ctx) {
 }
 
 void handleUpload(AppContext* ctx, WiFiClient& client, uint32_t content_length,
-                  const char* request_id, const char* actor) {
+                  const std::string& buffered, const char* request_id, const char* actor) {
     if (g_busy) {
         sendErrorClose(ctx, client, mcco::ErrCode::OtaInProgress, request_id);
         return;
@@ -278,9 +297,10 @@ void handleUpload(AppContext* ctx, WiFiClient& client, uint32_t content_length,
     }
     g_busy = true;
     const uint32_t deadline = millis() + kOtaIoTimeoutMs;
+    size_t cursor = 0; // drains `buffered` first, then the socket
 
     uint8_t sig[mcco::kOtaSignatureLen];
-    if (!readFully(client, sig, sizeof(sig), deadline)) {
+    if (!readMixed(client, buffered, cursor, sig, sizeof(sig), deadline)) {
         char detail[96];
         detailVersion(detail, sizeof(detail), ",\"reason\":\"truncated_signature\"");
         otaLog(ctx, mcco::LogLevel::Error, "upload_rejected", request_id, actor, detail);
@@ -313,7 +333,16 @@ void handleUpload(AppContext* ctx, WiFiClient& client, uint32_t content_length,
             break;
         }
         const size_t want = remaining < sizeof(chunk) ? remaining : sizeof(chunk);
-        const int r = client.read(chunk, want);
+        int r = 0;
+        if (cursor < buffered.size()) {
+            // Parser-buffered prefix: no socket wait needed.
+            const size_t take = want < buffered.size() - cursor ? want : buffered.size() - cursor;
+            memcpy(chunk, buffered.data() + cursor, take);
+            cursor += take;
+            r = (int)take;
+        } else {
+            r = client.read(chunk, want);
+        }
         if (r > 0) {
             if (Update.write(chunk, (size_t)r) != (size_t)r) {
                 stream_ok = false;

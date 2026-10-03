@@ -22,12 +22,15 @@ void noteStatusServed(AppContext* ctx);
 // POST /api/v1/ota/upload. Streams the raw container (64-byte signature ||
 // image) from the socket straight to the inactive OTA slot in ~4 KB chunks —
 // the body never touches the capped request buffer or a heap allocation
-// (AGENTS.md: 320 KB RAM). Verifies the ECDSA signature over the SHA-256 of
-// the written image BEFORE reporting success; on failure the slot write is
-// aborted so it cannot boot. Writes the full HTTP response (Connection:
-// close) on every path.
+// (AGENTS.md: 320 KB RAM). `buffered` carries any body bytes the request
+// parser already consumed past the header terminator before the intercept
+// ran (a fast client sends headers+body in one flight) — they are consumed
+// FIRST, then the remainder is read from the socket. Verifies the ECDSA
+// signature over the SHA-256 of the written image BEFORE reporting success;
+// on failure the slot write is aborted so it cannot boot. Writes the full
+// HTTP response (Connection: close) on every path.
 void handleUpload(AppContext* ctx, WiFiClient& client, uint32_t content_length,
-                  const char* request_id, const char* actor);
+                  const std::string& buffered, const char* request_id, const char* actor);
 
 // POST /api/v1/ota/apply body: {} / {"force":bool}. Returns false on a
 // malformed body (caller answers 400 bad_request).

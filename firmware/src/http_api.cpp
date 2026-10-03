@@ -667,7 +667,14 @@ void HttpApi::handleClient(WiFiClient& client, uint32_t header_timeout_ms) {
         }
         const std::string ota_actor =
             ota_session ? "webui" : "apikey:" + ota_principal.key_id;
-        ota::handleUpload(ctx, client, content_length, request_id.c_str(),
+        // Body bytes already past the header terminator (the parser reads in
+        // segments; a fast client has part of the body in header_block). The
+        // stream consumes these FIRST — passing nothing desynced the upload
+        // (bench finding, DEBUG-OTA.md).
+        const size_t hdr_end = header_block.find("\r\n\r\n");
+        const std::string body_prefix =
+            hdr_end == std::string::npos ? "" : header_block.substr(hdr_end + 4);
+        ota::handleUpload(ctx, client, content_length, body_prefix, request_id.c_str(),
                           ota_actor.c_str());
         return;
     }
