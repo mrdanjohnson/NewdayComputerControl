@@ -4,55 +4,48 @@ Read this first in a new session, then `firmware/AGENTS.md`, then the
 phase doc for the work at hand. Project root:
 `/Users/danieljohnson/Public/ESP32-MCA Command Loop Design/`
 
-## Current state & next steps (2026-10-01)
+## Current state & next steps (2026-10-03)
 
-> **State:** Phase 6 firmware is code-complete and host-verified, committed
-> as `13d4de2` (X-API-Key auth fallback + 401 usage hint, hello 4003 close
-> reason, PHASE6.md) and `5ccca55` (signed dual-partition OTA per spec 15.3,
-> at10.py/at12.py authored, at05.py 20-code pin, dist refreshed). Native
-> 156/156; both envs compile (S3 image 69.5% of its OTA slot). The Web UI
-> wait-logic fix and HANDOFF edit from 09-30 are inside `a481ec9`. **Nothing
-> is flashed** — the device still runs the 09-30 phase-5 binary.
->
-> **The one decision that needs the user — flashing migrates storage:** the
-> new S3 partition table (`partitions_maccontrol.csv`: factory + ota_0/1 +
-> LittleFS) moves the LittleFS region, so the first flash **orphans the
-> on-device API keys, macros, triggers, and ledger** (NVS pairing/Wi-Fi/
-> identity/unlock-password at 0x9000 survive). Plan: back up if the ledger
-> matters (`esptool read_flash`), flash over the 'com' cable, re-provision
-> keys (serial CLI or `install.sh --provision`), re-create macros, re-pair
-> is NOT needed (NVS survives) but verify. Full forensics:
-> `docs/DEBUG-OTA.md`; phase log: `docs/PHASE6.md`.
+> **State:** Phase 6 firmware is **flashed, re-provisioned, and OTA-smoked on
+> hardware** (commits `13d4de2`, `5ccca55`, `49a2e07`; native 156/156, both
+> envs compile). The S3 runs `1.6.0-phase6` from the new partition table
+> (factory + ota_0/ota_1 + LittleFS); the LittleFS migration orphaned keys/
+> macros/ledger as flagged, NVS survived (pairing/Wi-Fi/identity/admin
+> password), and new keys were provisioned: **key-09 READ / key-10 CONTROL /
+> key-11 ADMIN** (label "bench"). Pre-migration LittleFS backup:
+> `/var/tmp/maccontrol_littlefs_pre-p6-migration.bin`. The OTA path is proven
+> end to end over the air: signed upload 200 (9.2 s), apply → reboot →
+> self-check confirmed on first status serve, no rollback; garbage → 400 in
+> 0.23 s; CONTROL → 403. One real bug (upload desync on parser-buffered body
+> prefix) was found by the smoke and fixed — forensics in `docs/DEBUG-OTA.md`.
+> `dist/esp32-s3/` is in sync with the flashed build.
 >
 > **Next steps, in order:**
-> 1. Flash the S3 + re-provision (above), then network smoke: Web UI 200,
->    clean 401s, `device.firmware_version` in `/api/v1/status`.
-> 2. OTA smoke over the air: `scripts/ota_sign.py sign` the built image with
->    `firmware/keys/ota_dev.pem`, upload/apply via at12.py (or curl), verify
->    reboot into the pending slot + 60 s self-check confirmation; then a
->    deliberate rollback test (tampered image → 400; the deep
->    unconfirmed-slot revert check stays DEFERRED).
-> 3. Live AT-10 (needs a registry-registered-but-not-allowlisted probe
->    bundle on the target) and AT-12; then the Milestone 2 sweep: AT-05
->    (updated pin), AT-06…AT-09, AT-11 ×2 — full re-run because the binary
->    changed.
+> 1. Macros/triggers were lost in the migration — re-create them (Web UI).
+>    When churchtech's Mac next wakes, ag-05e1 should self-reconnect (the
+>    endpoint logged `pairing_restored`; it had not reconnected at handoff
+>    time, likely asleep).
+> 2. Live AT-10 (needs a registry-registered-but-not-allowlisted probe bundle
+>    on the target) and AT-12 (signer legs now have a proven device path;
+>    `--signing-key firmware/keys/ota_dev.pem`).
+> 3. Milestone 2 sweep: AT-05 (updated 20-code pin) + AT-06…AT-09 + AT-10 +
+>    AT-11 + AT-12, ×2 consecutive on one boot per round. AT-06/AT-11 steal
+>    the pairing — re-pair + `launchctl kickstart -k gui/$(id -u)/
+>    com.maccontrol.agent` is the permanent last step.
 > 4. AT-11 bench-WS caveat still open: re-run with the bench Mac's
 >    long-lived-WS path fixed (outbound WS dies ~30 s) or formally accept.
-> 5. Building-rollout notes (unchanged): Macs need auto-login for the
->    gui-domain agent; after any AT-06/AT-11 run re-pair +
->    `launchctl kickstart -k gui/$(id -u)/com.maccontrol.agent`; unlock
->    password is per-device plaintext — set a per-site policy.
+> 5. Known minor: OTA upload 400/409 envelopes reuse the generic
+>    `bad_request` message text (code is correct) — fix next firmware touch.
 > 6. Phase 6 leftovers (deferred, documented in PHASE6.md): Q-SYS/Companion
 >    modules (need target hardware), Ethernet (needs PHY add-on), monitored-
 >    app registry, ledger durable-stream growth policy (needs a spec
 >    amendment). Optional UI polish: awake/asleep dashboard badge.
 >
-> Carried-over 09-30 state (now history): Phase 5 gate complete (AT-07/08/
-> 09/06 green ×2; AT-11 core green with the bench-WS caveat); unlock feature,
-> spacebar wake chord, macro-wake replug all shipped and user-verified;
-> churchtech's agent (ag-05e1) healthy; 3 active keys (key-05 READ / key-06
-> CONTROL / key-07 ADMIN — probe-verified roles, NOT the listed order). Wake
-> button awaiting user re-test. See the dated 09-30 sections below.
+> Carried-over 09-30/10-01 state (now history): Phase 5 gate complete
+> (AT-07/08/09/06 green ×2; AT-11 core green with the bench-WS caveat);
+> unlock feature, spacebar wake chord, macro-wake replug all shipped and
+> user-verified; X-API-Key + 401 hint and hello 4003 reason shipped.
+> See the dated sections below.
 
 ## 2026-09-30 (latest): UNLOCK COMMAND — device-stored password, login_screen detection
 

@@ -1,4 +1,4 @@
 source_env: esp32-s3-devkitc-1
-built: 2026-10-01T14:23:53Z
-git: 5ccca55
-git_desc: signed dual-partition OTA (phase 6, spec 15.3) + X-API-Key auth
+built: 2026-10-03T13:05:37Z
+git: 49a2e07
+git_desc: OTA upload desync fix (parser-buffered body prefix)

@@ -36,6 +36,28 @@ dropped connection, not a 400. Retry the upload. If this ever fires in the
 field, the fix is erasing in bounded chunks (raw `esp_ota_begin/write` with a
 pre-erase loop that feeds the WDT), not a longer TWDT.
 
+## Parser-buffered body prefix desync (fixed 2026-10-03, 49a2e07)
+
+Symptom: an OTA upload from a fast client (curl `--data-binary` sends
+headers+body in one flight) hung forever — no response until the client's own
+timeout closed the TCP connection, then the device logged
+`truncated_signature` / `upload_rejected` at the exact moment the client gave
+up. Status endpoint stayed healthy throughout (the mc_http task was blocked
+inside the upload, one connection at a time).
+
+Root cause: the request parser reads the socket in segments and stops at the
+header terminator, but the read that FINDS `\r\n\r\n` may already have pulled
+body bytes into `header_block`. The upload intercept runs before the normal
+body path and originally read the streamed container straight from the
+socket, orphaning those buffered bytes — the signature read then consumed
+payload bytes (or blocked on an empty socket).
+
+Fix: the intercept passes `header_block` past `\r\n\r\n` as `buffered`;
+`handleUpload` drains it first (`readMixed` for the 64-byte signature, a
+buffer-aware stream loop for the image) and only then reads the socket.
+Lesson for any future streamed endpoint on this server: the parser's buffered
+prefix is part of the body — always thread it through.
+
 ## Signature is verified AFTER the write (deviation, RAM-driven)
 
 Spec 15.3 draws verification before the flash write. A 1.4 MB image cannot be

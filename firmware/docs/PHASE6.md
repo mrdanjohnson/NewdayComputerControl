@@ -113,6 +113,46 @@ gui/$(id -u)/com.maccontrol.agent` is the permanent last step (HANDOFF).
 
 ## Log
 
+### 2026-10-03: Flashed, re-provisioned, OTA smoke-tested on hardware — one real bug found and fixed (49a2e07)
+
+> The device was flashed with the Phase 6 binary over the 'com' cable and
+> re-provisioned. The migration went exactly as flagged: LittleFS orphaned
+> (fresh kstore/mstore/tstore), NVS survived (hostname, device_id, admin
+> password, **pairing** — `pairing_restored` in the boot log). New keys:
+> key-09 READ / key-10 CONTROL / key-11 ADMIN (label "bench"). Pre-migration
+> LittleFS backed up at `/var/tmp/maccontrol_littlefs_pre-p6-migration.bin`
+> (1.5 MB; /var/tmp survives macOS /tmp wipes).
+>
+> OTA smoke over the air, all against the live contract: CONTROL upload →
+> 403; 256-byte garbage upload → 400 `bad_request`; signed 1.4 MB upload →
+> 200 `{"validated":true,"version":"1.6.0-phase6"}` in 9.2 s (slot erase +
+> stream + verify); apply `{"force":false}` → 200, reboot into the pending
+> slot, `pairing_restored` again, self-check confirmed on the first status
+> serve, no rollback (past the 60 s window, single boot cycle).
+>
+> **Bug found by the smoke (fixed in 49a2e07, re-flashed, re-verified):**
+> the upload intercept ignored body bytes the request parser had already
+> consumed past the header terminator, so a fast client (curl --data-binary)
+> desynced the streamed read — the device blocked until the client's own
+> timeout dropped the TCP connection, then logged `truncated_signature` /
+> `upload_rejected`. Fix: `handleUpload` receives the buffered prefix and
+> drains it first (`readMixed` + buffer-aware stream loop). Post-fix:
+> garbage → 400 in 0.23 s. Forensics added to `docs/DEBUG-OTA.md`.
+>
+> Known minor (not worth a solo flash cycle): the upload 400/409 envelopes
+> reuse the generic `bad_request` default message ("Malformed JSON…") —
+> correct code, cosmetically wrong text for a binary endpoint; fix the
+> message next time the firmware is touched for other reasons.
+>
+> Agent note: ag-05e1 had not reconnected at handoff time — the churchtech
+> Mac was likely asleep; the endpoint side is proven (`pairing_restored`,
+> agent status surface live). Expect self-reconnect on wake, as before.
+>
+> Still owed for the Milestone 2 gate: live AT-10 (needs a registry-
+> registered-but-not-allowlisted probe bundle on the target), AT-12 (its
+> signer legs now have a proven device path), then the AT-05 (updated pin) +
+> AT-06…AT-09 + AT-11 full sweep ×2.
+
 ### 2026-10-01: OTA + AT-10/AT-12 authored, host-verified, committed (5ccca55) — NOT flashed
 
 > Signed dual-partition OTA implemented per §15.3 and committed with the AT
