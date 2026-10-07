@@ -208,14 +208,19 @@ async def serve(rt):
 
 
 def run_serve(state, log, headless):
+    # Create (and make current) the event loop BEFORE Runtime: on Python 3.9
+    # asyncio.Queue/Event bind to get_event_loop() EAGERLY at construction,
+    # and Runtime builds both. Bound to the wrong (default) loop they die
+    # with "Future attached to a different loop" on the first backoff — 3.10+
+    # binds lazily, which is why this only bites 3.9 clients.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     rt = Runtime(state, log)
     if not headless:
         from .ui import start_ui
         rt.ui = start_ui(rt, lambda code: do_pair(
             state, state.path, state.hostname, code, log))
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     try:
         loop.add_signal_handler(signal.SIGINT, rt.request_stop)
         loop.add_signal_handler(signal.SIGTERM, rt.request_stop)

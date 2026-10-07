@@ -2,6 +2,13 @@
 status, and a local log view. Tkinter when importable, osascript fallback for
 code entry. Fully headless operation is supported via --pair-code/--headless;
 this module is simply not started then.
+
+macOS constraint (hard-won, crash-reported on a CLT-Python client):
+Tcl/Tk panics with abort() when Tk_Init runs off the main thread — a C-level
+process kill that Python cannot catch. The agent's asyncio loop owns the main
+thread and TkUI._run executes in a worker thread, so on macOS the Tk window
+only ever appears if _run somehow runs on the main thread; anywhere else the
+osascript fallback is used. Do NOT "try" Tk off-thread to see what happens.
 """
 from __future__ import annotations
 
@@ -64,13 +71,21 @@ class TkUI:
         return pairing, conn
 
     def _run(self):
+        import threading
+        if threading.current_thread() is not threading.main_thread():
+            # macOS Tk must init on the main thread; off-thread it panics and
+            # abort()s the whole process (uncatchable). Fall back to the
+            # osascript pairing dialog — prompt only when actually unpaired,
+            # so a paired agent that keeps restarting (e.g. a halt loop)
+            # never spams the dialog on every launchd respawn.
+            if not self.rt.state.paired:
+                code = pair_code_via_osascript()
+                if code:
+                    self.pair_callback(code)
+            return
         try:
             import tkinter as tk
         except ImportError:
-            # osascript fallback: prompt only when actually unpaired — a
-            # paired agent that keeps restarting (e.g. protocol_mismatch
-            # halt loop) must not spam the code dialog on every launchd
-            # respawn.
             if not self.rt.state.paired:
                 code = pair_code_via_osascript()
                 if code:
@@ -138,7 +153,12 @@ class TkUI:
 
 
 def start_ui(rt, pair_callback):
-    """Start the minimal UI in a background thread. Never raises."""
+    """Start the minimal UI in a background thread. Never raises.
+
+    On macOS the thread is off the main thread, so the Tk window is skipped
+    there (see module docstring) and this reduces to the osascript pairing
+    dialog when unpaired.
+    """
     try:
         ui = TkUI(rt, pair_callback)
         ui.start()
