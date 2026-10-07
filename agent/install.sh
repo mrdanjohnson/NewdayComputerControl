@@ -374,7 +374,7 @@ if [[ "$PROVISION" -eq 1 ]]; then
     else
         SERIAL_ARGS+=(--keys-label "install-$(date +%Y%m%d)")
     fi
-    log "Serial phase: WiFi + keys + admin password over $SERIAL_PORT (board will reboot once on port open)"
+    log "Serial phase: WiFi + keys + admin password over $SERIAL_PORT (port open may reboot the board once)"
     PROVISION_JSON="$("$VENV_DIR/bin/python" - "$AGENT_DIR" "${SERIAL_ARGS[@]}" <<'PYEOF'
 import sys
 sys.path.insert(0, sys.argv[1])

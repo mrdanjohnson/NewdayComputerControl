@@ -15,9 +15,11 @@ operator can debug each phase alone:
 
 Design constraints (see firmware/docs/DEBUG-PHASE45-USB-LINK.md and the
 serial landmines in firmware/AGENTS.md):
-  * Opening the serial port reboots the board (macOS asserts DTR/RTS, which
-    drive EN/IO0 on the bridge). That is EXPECTED here — open the port once,
-    keep it open for the whole serial phase, deassert DTR/RTS immediately.
+  * Opening the serial port MAY reboot the board (macOS asserts DTR/RTS,
+    which drive EN/IO0 on the bridge) — but not every driver/cable combo
+    wires those through, so the serial phase must not depend on it: open the
+    port once, keep it open for the whole phase, deassert DTR/RTS
+    immediately, and fall back to poking the CLI when no boot banner appears.
   * WiFi passwords and admin passwords are never echoed to stdout/stderr.
     API keys are parsed from the console and passed to install.sh via the
     JSON result — never printed by this script.
@@ -44,6 +46,19 @@ CREATED_LINE_RE = re.compile(r"^created (mckid_[A-Za-z0-9_-]+) \((.*)\)$")
 WIFI_CONNECTED_RE = re.compile(r"^connected ip=(\d{1,3}(?:\.\d{1,3}){3})\r?$", re.MULTILINE)
 KEY_ID_RE = re.compile(r"mckid_[A-Za-z0-9_-]+")
 
+# Terminal signatures that mark a complete reply for each CLI command. The
+# console does NOT echo input (firmware cli.cpp handleChar only accumulates
+# characters), so reply detection must match the reply text, never the
+# command text. Signatures verified against firmware/src/cli.cpp.
+WIFI_SET_DONE_RE = re.compile(
+    r"wifi credentials saved|persist failed|usage:|unknown command")
+WIFI_STATUS_DONE_RE = re.compile(
+    r"connected ip=|not connected|usage:|unknown command")
+KEY_CREATE_DONE_RE = re.compile(
+    r"created mckid_|key store full|role must be|usage:|unknown command")
+ADMIN_SET_DONE_RE = re.compile(
+    r"admin password (?:set|NOT set)|usage:|unknown command")
+
 
 class ProvisionError(Exception):
     """Fatal phase error; the message is already operator-facing."""
@@ -65,7 +80,15 @@ def _drain_serial(ser, seconds, buffer):
 
 
 def _wait_for(serial_mod, port, needle_re, total_s, reboot):
-    """Open the port once, optionally pulse RTS, wait for a banner line."""
+    """Open the port once, optionally pulse RTS, wait for the console.
+
+    Readiness normally means the boot banner, but opening the port does not
+    reboot every board (driver/cable dependent), so a console that has been
+    up since power-on may never print one: its banner scrolled by long ago
+    and the periodic [heap] line (firmware main loop) arrives on a >30 s
+    cadence. If the banner has not shown shortly into the wait, poke the CLI
+    with 'help' and treat any answer as readiness.
+    """
     buffer = []
     ser = serial_mod.Serial(port, 115200, timeout=0.1)
     try:
@@ -78,42 +101,75 @@ def _wait_for(serial_mod, port, needle_re, total_s, reboot):
             time.sleep(0.2)
             ser.rts = False
         deadline = time.monotonic() + total_s
+        poke_after = min(8.0, total_s / 3.0)
+        poked_len = None
         while time.monotonic() < deadline:
             _drain_serial(ser, 0.2, buffer)
-            for line in "".join(buffer).splitlines():
-                if needle_re.search(line):
-                    return ser, buffer
+            text = "".join(buffer)
+            if needle_re.search(text):
+                return ser, buffer
+            elapsed = total_s - (deadline - time.monotonic())
+            if poked_len is None and elapsed >= poke_after:
+                ser.write(b"help\n")
+                poked_len = len(text)
+            elif poked_len is not None and len(text) > poked_len and \
+                    text[poked_len:].strip(" \t\r\n\x00"):
+                # The console answered the poke even though no boot banner
+                # appeared: it is already sitting at the CLI prompt.
+                return ser, buffer
         text = "".join(buffer).strip()
         raise ProvisionError(
-            "device did not become ready within %ds (looked for %r). "
-            "Last output:\n%s" % (total_s, needle_re.pattern, text[-2000:] or "(none)"))
+            "device did not become ready within %ds: no boot banner on %s and "
+            "no answer to a 'help' poke.\n"
+            "Last output:\n%s\n"
+            "Checklist:\n"
+            "  1. Power-cycle the board (disconnect the 'com' cable and its PSU "
+            "for 5-10 s, reconnect). A hung board prints nothing.\n"
+            "  2. The 'com' (CH343 UART) cable must be the one plugged into this "
+            "Mac; the 'USB' port is HID-only and never answers the console.\n"
+            "  3. Do not hold BOOT while plugging in - it forces ROM download "
+            "mode, which never prints the app banner.\n"
+            "  4. If a terminal (e.g. 'screen %s 115200') cannot get a reply "
+            "to typing 'help' either, the data path is broken: install the WCH "
+            "CH34x/CH343 driver (https://www.wch.cn/downloads/CH341SER_MAC_ZIP.html), "
+            "or try another USB cable/port. './install.sh --flash' is a quick "
+            "data-path test - esptool cannot sync either if RX/TX are broken."
+            % (total_s, port, text[-2000:] or "(none)", port))
     except Exception:
         ser.close()
         raise
 
 
-def _run_cli_command(ser, buffer, consumed, cmd, settle_s, timeout_s=20.0):
+def _run_cli_command(ser, buffer, consumed, cmd, settle_s, timeout_s=20.0,
+                     done_res=()):
     """Send one CLI command and return (output_for_cmd, new_consumed_offset).
 
-    `consumed` is the number of buffered characters already processed by
-    earlier commands; the echo of `cmd` is searched for only after it, so
-    repeated commands (e.g. polling 'wifi status') parse cleanly.
+    The console never echoes input, so a complete reply is recognized by the
+    per-command terminal signatures in `done_res` (matched ~settle_s after
+    the first hit so multi-line replies fully arrive), never by the command
+    text. `consumed` is the number of buffered characters already processed
+    by earlier commands, so repeated commands (e.g. polling 'wifi status')
+    parse cleanly.
     """
-    sent = time.monotonic()
+    if not done_res:
+        raise ValueError("done_res must contain at least one reply signature")
     ser.write(cmd.encode("utf-8") + b"\n")
     end = time.monotonic() + timeout_s
+    matched_at = None
     while True:
         _drain_serial(ser, min(settle_s, max(0.1, end - time.monotonic())), buffer)
         text = "".join(buffer)
-        idx = text.find(cmd, consumed)
-        if idx >= 0:
-            after = text[idx + len(cmd):]
-            lines = [l for l in after.splitlines() if l.strip()]
-            if lines and (time.monotonic() - sent) >= settle_s:
-                return after, len(text)
+        tail = text[consumed:]
+        if matched_at is None:
+            for r in done_res:
+                if r.search(tail):
+                    matched_at = time.monotonic()
+                    break
+        elif time.monotonic() - matched_at >= settle_s:
+            return tail, len(text)
         if time.monotonic() >= end:
             raise ProvisionError(
-                "no response to %r within %ss; console so far:\n%s"
+                "no reply to %r within %ss; console so far:\n%s"
                 % (cmd, timeout_s, text[-2000:]))
 
 
@@ -166,12 +222,14 @@ def cmd_serial(args):
         if args.wifi_ssid:
             settle = args.settle
             _, consumed = _run_cli_command(
-                ser, buffer, 0, "wifi set %s %s" % (args.wifi_ssid, args.wifi_pass), settle)
+                ser, buffer, 0, "wifi set %s %s" % (args.wifi_ssid, args.wifi_pass),
+                settle, done_res=(WIFI_SET_DONE_RE,))
             ip = None
             deadline = time.monotonic() + args.wifi_timeout
             while time.monotonic() < deadline:
-                out, consumed = _run_cli_command(ser, buffer, consumed, "wifi status",
-                                                 settle, timeout_s=10.0)
+                out, consumed = _run_cli_command(
+                    ser, buffer, consumed, "wifi status", settle, timeout_s=10.0,
+                    done_res=(WIFI_STATUS_DONE_RE,))
                 m = WIFI_CONNECTED_RE.search(out)
                 if m:
                     ip = m.group(1)
@@ -192,7 +250,7 @@ def cmd_serial(args):
             for role in ("READ", "CONTROL", "ADMIN"):
                 out, consumed = _run_cli_command(
                     ser, buffer, consumed, "key create %s %s" % (role, args.keys_label),
-                    args.settle)
+                    args.settle, done_res=(KEY_CREATE_DONE_RE,))
                 key_id, raw = _parse_key_output(out)
                 result["keys"][role] = {"key_id": key_id, "raw": raw}
                 if log is not None:
@@ -202,11 +260,13 @@ def cmd_serial(args):
         if args.admin_password:
             consumed = consumed if (args.wifi_ssid or not args.no_keys) else 0
             out, _ = _run_cli_command(ser, buffer, consumed,
-                                      "admin set %s" % args.admin_password, args.settle)
+                                      "admin set %s" % args.admin_password, args.settle,
+                                      done_res=(ADMIN_SET_DONE_RE,))
             if "admin password set" not in out:
                 tail = "\n".join(l for l in out.splitlines() if l.strip())[-500:]
-                # The password itself is echoed back by the console line editor;
-                # never propagate it into logs or error text.
+                # The console does not echo input, so the password never
+                # appears in the reply; scrub it anyway before it can reach
+                # logs or error text.
                 for token in (args.admin_password,):
                     tail = tail.replace(token, "***")
                 raise ProvisionError("admin set failed: " + (tail or "(no output)"))
@@ -400,25 +460,27 @@ def cmd_network(args):
 # --------------------------------------------------------------------------
 
 def _selftest():
+    # The console does not echo input and prints no prompt — fixtures match
+    # firmware/src/cli.cpp output shapes exactly.
     out = _parse_key_output(
-        "\r\n"
-        "key create READ install\r\n"
         "created mckid_a1b2c3d4e5f6 (install)\r\n"
         "API key (shown once, store it now):\r\n"
-        "mck_9f8e7d6c5b4a3210f1e2d3c4b5a69788\r\n"
-        "mc> ")
+        "mck_9f8e7d6c5b4a3210f1e2d3c4b5a69788\r\n")
     assert out == ("mckid_a1b2c3d4e5f6", "mck_9f8e7d6c5b4a3210f1e2d3c4b5a69788"), out
 
     try:
-        _parse_key_output("key store full (max 8 active keys)\r\nmc> ")
+        _parse_key_output("key store full (max 8 active keys)\r\n")
     except ProvisionError as exc:
         assert "key store full" in str(exc)
     else:
         raise AssertionError("expected ProvisionError for full key store")
 
-    m = WIFI_CONNECTED_RE.search("wifi status\r\nconnected ip=10.10.40.242\r\nmc> ")
+    m = WIFI_CONNECTED_RE.search("connected ip=10.10.40.242\r\n")
     assert m and m.group(1) == "10.10.40.242", m
-    assert not WIFI_CONNECTED_RE.search("wifi status\r\nnot connected\r\nmc> ")
+    assert not WIFI_CONNECTED_RE.search("not connected\r\n")
+    assert not WIFI_CONNECTED_RE.search(
+        "wifi credentials saved; reconnecting\r\n")  # 'wifi set' reply must not
+    # trip the 'connected ip=' matcher while polling
 
     m = CREATED_LINE_RE.match("created mckid_x (my label)")
     assert m and m.group(2) == "my label", m

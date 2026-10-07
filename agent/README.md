@@ -45,7 +45,8 @@ continues safely):
   `--provision` is also given). Auto-detects the serial port
   (`/dev/cu.usbmodem*`, `/dev/cu.wchusbserial*`, `/dev/cu.usbserial*`; pick
   from a numbered list when several match, override with `--port P`). The
-  board reboots when the port opens — expected.
+  board may reboot when the port opens (driver/cable dependent) — harmless
+  either way.
 - `--no-flash` — skip the interactive flash/provision offer (agent-only
   install when run interactively).
 - `--provision` — full endpoint setup on an already-flashed board: serial
