@@ -19,7 +19,12 @@ connected over USB, a single run flashes the committed firmware bundle
 (`../firmware/dist/esp32-s3`), sets WiFi + API keys + admin password over the
 serial console, discovers the device on the network, opens the pairing
 window, pairs this Mac, and finishes with the normal config + LaunchAgent
-steps:
+steps. The flashed firmware is stock: the device keeps its factory
+`mac-<serial>` hostname, and WiFi is the network you provide during setup.
+
+Run interactively and the installer asks whether to flash + set up an
+endpoint (answering no — or passing `--no-flash` — gives an agent-only
+install). To script it end to end, pass the flags explicitly:
 
 ```sh
 cd agent
@@ -35,6 +40,8 @@ continues safely):
   (`/dev/cu.usbmodem*`, `/dev/cu.wchusbserial*`, `/dev/cu.usbserial*`; pick
   from a numbered list when several match, override with `--port P`). The
   board reboots when the port opens — expected.
+- `--no-flash` — skip the interactive flash/provision offer (agent-only
+  install when run interactively).
 - `--provision` — full endpoint setup on an already-flashed board: serial
   phase (WiFi + keys + admin password), then network phase (discover via
   mDNS, open the pairing window via the Web UI API, run the agent pairing

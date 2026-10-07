@@ -28,6 +28,7 @@ HEADLESS=0
 NO_START=0
 UNINSTALL=0
 FLASH=0
+NO_FLASH=0
 PROVISION=0
 PORT_OPT=""
 WIFI_SSID=""
@@ -50,6 +51,10 @@ Can also flash and provision a MacControl endpoint (ESP32-S3) from this Mac.
 
 USAGE
   ./install.sh [OPTIONS]
+
+  Run interactively with no endpoint flags and the installer asks whether to
+  flash + provision an ESP32-S3 endpoint over USB. Answer no (or use
+  --no-flash) for an agent-only install.
 
 FIRST RUN (install + pair + configure)
   ./install.sh --hostname maccontrol-01 --pair-code ABC234XY \
@@ -83,6 +88,8 @@ RE-RUNNING RECONFIGURES
 ENDPOINT OPTIONS
   --flash              Flash firmware/dist/esp32-s3 to an ESP32-S3 (stops
                        after flashing unless --provision is also given).
+  --no-flash           Skip the interactive flash/provision offer (agent-only
+                       install when run interactively).
   --provision          Full endpoint setup on an already-flashed board:
                        serial phase (WiFi + keys + admin password) then
                        network phase (discover, pairing window, pair agent).
@@ -148,6 +155,7 @@ while [[ $# -gt 0 ]]; do
         --no-start)      NO_START=1; shift ;;
         --uninstall)     UNINSTALL=1; shift ;;
         --flash)         FLASH=1; shift ;;
+        --no-flash)      NO_FLASH=1; shift ;;
         --provision)     PROVISION=1; shift ;;
         --port)          PORT_OPT="${2:?--port needs a value}"; shift 2 ;;
         --wifi-ssid)     WIFI_SSID="${2:?--wifi-ssid needs a value}"; shift 2 ;;
@@ -167,6 +175,28 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     rm -f "$PLIST_DEST"
     log "Removed $PLIST_DEST (venv, ~/.maccontrol, and pairing token kept)."
     exit 0
+fi
+
+[[ "$FLASH" -eq 0 || "$NO_FLASH" -eq 0 ]] \
+    || die "--flash and --no-flash are mutually exclusive"
+
+# --- interactive endpoint offer ----------------------------------------------
+# With no endpoint decision on the command line and a terminal attached, offer
+# to flash + provision an ESP32-S3. Flag-driven and non-TTY runs are never
+# prompted (--no-flash skips the question for agent-only installs).
+
+if [[ "$FLASH" -eq 0 && "$PROVISION" -eq 0 && "$NO_FLASH" -eq 0 && -t 0 ]]; then
+    cat >&2 <<'EOF'
+==> This package can flash a MacControl ESP32-S3 over USB and set it up on
+==> your WiFi (stock firmware; the device keeps its factory mac-<serial>
+==> hostname). The board must be connected to this Mac's USB port.
+EOF
+    reply=""
+    read -r -p "==> Flash and set up an endpoint now? [y/N]: " reply || true
+    if [[ "$reply" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+        FLASH=1
+        PROVISION=1
+    fi
 fi
 
 # --- preflight ---------------------------------------------------------------
@@ -205,7 +235,7 @@ log "Installing Python dependencies"
 # -> config -> LaunchAgent. Each phase's failure message says what to fix and
 # notes that re-running is safe (phases are idempotent).
 
-if [[ "$PROVISION" -eq 1 && -z "$WIFI_SSID" && -z "$ADMIN_PASSWORD" ]]; then
+if [[ "$PROVISION" -eq 1 && -z "$WIFI_SSID" && -z "$ADMIN_PASSWORD" && ! -t 0 ]]; then
     die "--provision needs --wifi-ssid/--wifi-pass and --admin-password (they are prompted for interactively when stdin is a TTY)"
 fi
 if [[ -n "$ADMIN_PASSWORD" && ${#ADMIN_PASSWORD} -lt 10 ]]; then
@@ -299,7 +329,11 @@ fi
 
 if [[ "$PROVISION" -eq 1 ]]; then
     if [[ -z "$WIFI_SSID" ]]; then
-        die "--provision needs --wifi-ssid/--wifi-pass (the endpoint must join your network for the network phase)"
+        if [[ -t 0 ]]; then
+            read -r -p "WiFi network name (SSID) for the endpoint: " WIFI_SSID || true
+        fi
+        [[ -n "$WIFI_SSID" ]] \
+            || die "--provision needs --wifi-ssid/--wifi-pass (the endpoint must join your network for the network phase)"
     fi
     if [[ -z "$WIFI_PASS" ]]; then
         WIFI_PASS="$(prompt_secret "WiFi password for '$WIFI_SSID' (input hidden)" "WiFi password")"
@@ -505,7 +539,7 @@ ${DAEMON_ARGS}
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
   </dict>
 </dict>
 </plist>
