@@ -202,9 +202,35 @@ fi
 # --- preflight ---------------------------------------------------------------
 
 [[ "$(uname -s)" == "Darwin" ]] || die "this installer targets macOS"
-command -v python3 >/dev/null 2>&1 || die "python3 not found; install Xcode CLT (xcode-select --install)"
-python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' \
-    || die "Python 3.9+ required (found $(python3 -V 2>&1))"
+
+# Pick the newest Python >= 3.9 for the venv. Xcode CLT-only Macs ship
+# python3 = 3.9, and the 3.9-compatible wheels for our dependencies are
+# fragile on PyPI (pyobjc-core 12.0 is yanked; pyobjc 12.1+/websockets 16+
+# require Python 3.10+), so prefer a newer interpreter when one is
+# installed. requirements.txt carries python_version markers so a bare 3.9
+# still resolves.
+pick_python() {
+    local c path ver best_ver="" best_path=""
+    for c in python3.13 python3.12 python3.11 python3.10 python3 \
+             /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+        path="$(command -v "$c" 2>/dev/null)" || continue
+        ver="$("$path" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)" || continue
+        [[ -n "$ver" ]] || continue
+        # keep the highest version (skip when ver <= best_ver)
+        if [[ -z "$best_ver" || "$ver" != "$(printf '%s\n%s\n' "$ver" "$best_ver" | sort -t. -k1,1n -k2,2n | head -1)" ]]; then
+            best_ver="$ver"; best_path="$path"
+        fi
+    done
+    [[ -n "$best_path" ]] || return 1
+    printf '%s' "$best_path"
+}
+
+PYTHON_BIN="$(pick_python)" || true
+[[ -n "$PYTHON_BIN" ]] \
+    || die "no python3 found; install Xcode CLT (xcode-select --install) or Python 3.9+ from python.org/Homebrew"
+"$PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' \
+    || die "Python 3.9+ required (newest found: $("$PYTHON_BIN" -V 2>&1) at $PYTHON_BIN)"
+log "Using $("$PYTHON_BIN" -V 2>&1) at $PYTHON_BIN"
 [[ -f "$AGENT_DIR/requirements.txt" ]] || die "requirements.txt not found in $AGENT_DIR"
 
 # --- venv + dependencies -----------------------------------------------------
@@ -224,7 +250,7 @@ if ! venv_healthy; then
         rm -rf "$VENV_DIR"
     fi
     log "Creating virtualenv at $VENV_DIR"
-    python3 -m venv "$VENV_DIR"
+    "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
 log "Installing Python dependencies"
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip
@@ -360,15 +386,15 @@ PYEOF
 )" || die "serial provisioning failed (fix the issue and re-run with --provision; completed steps are safe to repeat)"
 
     if [[ "$NO_KEYS" -eq 0 ]]; then
-        READ_KEY="$(printf '%s' "$PROVISION_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["keys"]["READ"]["raw"])')" \
+        READ_KEY="$(printf '%s' "$PROVISION_JSON" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["keys"]["READ"]["raw"])')" \
             || die "could not parse the serial phase result"
         mkdir -p "$STATE_DIR"
         KEYS_FILE="$STATE_DIR/endpoint.keys"
         {
             printf 'ENDPOINT_HOSTNAME=\n'   # filled in after the network phase
-            printf 'READ_KEY=%s\n' "$(printf '%s' "$PROVISION_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["keys"]["READ"]["raw"])')"
-            printf 'CONTROL_KEY=%s\n' "$(printf '%s' "$PROVISION_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["keys"]["CONTROL"]["raw"])')"
-            printf 'ADMIN_KEY=%s\n' "$(printf '%s' "$PROVISION_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["keys"]["ADMIN"]["raw"])')"
+            printf 'READ_KEY=%s\n' "$(printf '%s' "$PROVISION_JSON" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["keys"]["READ"]["raw"])')"
+            printf 'CONTROL_KEY=%s\n' "$(printf '%s' "$PROVISION_JSON" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["keys"]["CONTROL"]["raw"])')"
+            printf 'ADMIN_KEY=%s\n' "$(printf '%s' "$PROVISION_JSON" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["keys"]["ADMIN"]["raw"])')"
         } > "$KEYS_FILE"
         chmod 600 "$KEYS_FILE"
         log "Wrote $KEYS_FILE (chmod 600)"
@@ -379,7 +405,7 @@ PYEOF
   terminal scrollback if the machine is shared.
 EOF
         for role in READ CONTROL ADMIN; do
-            key_line="$(printf '%s' "$PROVISION_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['keys']['$role']['raw'])")"
+            key_line="$(printf '%s' "$PROVISION_JSON" | "$PYTHON_BIN" -c "import json,sys; print(json.load(sys.stdin)['keys']['$role']['raw'])")"
             printf '  %s_KEY=%s\n' "$role" "$key_line" >&2
         done
     fi
@@ -388,12 +414,12 @@ EOF
     # --re-pair, open the pairing window, pair the agent, verify the session.
     HOST_FOR_NETWORK="$HOSTNAME_OPT"
     if [[ -z "$HOST_FOR_NETWORK" ]]; then
-        HOST_FOR_NETWORK="$(printf '%s' "$PROVISION_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ip") or "")' || true)"
+        HOST_FOR_NETWORK="$(printf '%s' "$PROVISION_JSON" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin).get("ip") or "")' || true)"
     fi
     [[ -n "$HOST_FOR_NETWORK" ]] || die "no hostname or IP to reach the endpoint on"
 
     if [[ "$RE_PAIR" -eq 0 && -s "$STATE_DIR/agent.json" ]] \
-        && python3 -c 'import json,os,sys; d=json.load(open(os.path.expanduser("~/.maccontrol/agent.json"))); sys.exit(0 if d.get("agent_token") else 1)' >/dev/null 2>&1; then
+        && "$PYTHON_BIN" -c 'import json,os,sys; d=json.load(open(os.path.expanduser("~/.maccontrol/agent.json"))); sys.exit(0 if d.get("agent_token") else 1)' >/dev/null 2>&1; then
         die "$HOME/.maccontrol/agent.json already holds a pairing token. Re-run with --re-pair to replace it, or --uninstall first"
     fi
 
@@ -407,7 +433,7 @@ sys._mc_console_log = lambda msg: print("==> %s" % msg, file=sys.stderr)
 raise SystemExit(mc_provision.main())
 PYEOF
 )" || die "network provisioning failed (the device is reachable but pairing did not complete; re-run with --provision --re-pair — WiFi and keys are already set)"
-    DISCOVERED_HOSTNAME="$(printf '%s' "$NETWORK_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hostname"])')" \
+    DISCOVERED_HOSTNAME="$(printf '%s' "$NETWORK_JSON" | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin)["hostname"])')" \
         || die "could not parse the network phase result"
     log "Endpoint paired as $DISCOVERED_HOSTNAME"
     # The endpoint.keys placeholder now gets the authoritative hostname.
@@ -451,7 +477,7 @@ fi
 ALLOW_JSON=""
 if [[ "$SET_ALLOW" -eq 1 ]]; then
     if [[ ${#ALLOW_ARGS[@]} -gt 0 ]]; then
-        ALLOW_JSON="$(printf '%s\n' "${ALLOW_ARGS[@]}" | python3 -c 'import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l.strip()]))')"
+        ALLOW_JSON="$(printf '%s\n' "${ALLOW_ARGS[@]}" | "$PYTHON_BIN" -c 'import json,sys; print(json.dumps([l for l in sys.stdin.read().splitlines() if l.strip()]))')"
     else
         ALLOW_JSON="[]"
     fi

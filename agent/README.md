@@ -12,7 +12,13 @@ See `../maccontrol_spec.agent.final.md` for the normative protocol (chapters
 
 ## Install
 
-Requires macOS with Python 3.9+ (system python3 is fine).
+Requires macOS with Python 3.9+. The installer builds the venv with the
+**newest** Python it can find (python.org, Homebrew, or Xcode CLT, in that
+order of preference) because the 3.9-compatible dependency wheels are fragile
+on PyPI (pyobjc-core 12.0 is yanked; newer pyobjc/websockets require Python
+3.10+). On a bare CLT-only Mac the venv falls back to the system Python 3.9
+and `requirements.txt` resolves pyobjc 11.x / websockets 15.x via
+`python_version` markers.
 
 **One installer (flash + provision + pair + install).** With an ESP32-S3
 connected over USB, a single run flashes the committed firmware bundle
