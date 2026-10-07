@@ -114,6 +114,35 @@ allow — for a full AV-control endpoint typically:
 Each action also has a `--disable-<action>` form; power actions are executed
 by the agent in software (`pmset` / System Events), not via HID chords.
 
+**Scheduled power-on failsafe:** the installer also sets
+`sudo pmset repeat poweron MTWRFSU 06:00:00` (once, when no repeat schedule
+exists) so a Mac that got shut down is back on at 6:00 AM without human
+intervention. It deliberately uses `poweron` rather than `wakeorpoweron`: a
+sleeping Mac is left alone — wake those over HID from the endpoint's Web UI
+or API (`POST /api/v1/system/wake`). The event lives in the real-time clock,
+so it works from a full shutdown with nothing running on the Mac. It needs
+sudo: with passwordless sudo or an interactive terminal it applies directly,
+otherwise the installer prints the exact command to run by hand. Change the
+schedule with `--poweron "MTWRF 07:30:00"` (forces a replacement) or remove
+it with `--no-poweron`. Pair this with `sudo pmset -a autorestart 1` (start
+up after power loss) for full coverage; note that neither recovers a hung
+machine — only a power relay does.
+
+**Flags added for this client-install round** (all re-runnable;
+`./install.sh --help` has one-line forms of everything):
+
+- `--no-flash` — skip the interactive "flash an ESP32-S3 now?" offer
+  (agent-only install; the offer only appears on an interactive terminal
+  with no endpoint flags given).
+- `--enable-sleep` / `--disable-sleep`, `--enable-restart` /
+  `--disable-restart`, `--enable-shutdown` / `--disable-shutdown` — the Mode B
+  power actions the endpoint's Web UI buttons trigger. Fail-closed disabled
+  by default; executed by the agent in software (`pmset` / System Events).
+  Typical AV endpoint: `./install.sh --enable-sleep --enable-restart
+  --enable-shutdown --enable-launch --enable-quit`.
+- `--poweron "DAYS HH:MM:SS"` / `--no-poweron` — the scheduled power-on
+  failsafe described above (`DAYS` = MTWRFSU subset, e.g. `MTWRFSU`).
+
 Run once in the foreground to pair and verify:
 
 ```sh

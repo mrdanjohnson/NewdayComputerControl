@@ -25,6 +25,13 @@ ENABLE_QUIT=""
 ENABLE_SLEEP=""
 ENABLE_RESTART=""
 ENABLE_SHUTDOWN=""
+# Scheduled power-on failsafe (pmset repeat). Deliberately 'poweron' (boots a
+# shut-down Mac) not 'wakeorpoweron' — sleeping Macs are left alone; the
+# endpoint wakes them over HID. Default applies once when no repeat schedule
+# exists; --poweron forces, --no-poweron cancels.
+POWERON_SCHED="MTWRFSU 06:00:00"
+POWERON_FORCE=0
+POWERON_CANCEL=0
 TRANSPORT=""
 POLL_INTERVAL=""
 HEADLESS=0
@@ -125,6 +132,13 @@ AGENT OPTIONS
   --disable-restart    Disable the restart action.
   --enable-shutdown    Enable the shutdown power action (agent-executed).
   --disable-shutdown   Disable the shutdown action.
+  --poweron "DAYS HH:MM:SS"
+                       Set the pmset repeat poweron failsafe: a SHUT-DOWN Mac
+                       boots at that time daily; sleeping Macs are left alone
+                       (wake them over HID). Default "MTWRFSU 06:00:00",
+                       applied once when no repeat schedule exists. Needs
+                       sudo; falls back to printing the command otherwise.
+  --no-poweron         Cancel repeating power events (pmset repeat cancel).
   --transport T        websocket (default) or polling.
   --poll-interval S    Polling interval, 2-30 (default 5).
   --headless           LaunchAgent runs the agent with --headless (no UI).
@@ -168,6 +182,9 @@ while [[ $# -gt 0 ]]; do
         --disable-restart) ENABLE_RESTART=0; shift ;;
         --enable-shutdown)  ENABLE_SHUTDOWN=1; shift ;;
         --disable-shutdown) ENABLE_SHUTDOWN=0; shift ;;
+        --poweron) POWERON_SCHED="${2:?--poweron needs a value like 'MTWRFSU 06:00:00'}"
+                   POWERON_FORCE=1; shift 2 ;;
+        --no-poweron) POWERON_CANCEL=1; shift ;;
         --transport)     TRANSPORT="${2:?--transport needs a value}"; shift 2 ;;
         --poll-interval) POLL_INTERVAL="${2:?--poll-interval needs a value}"; shift 2 ;;
         --headless)      HEADLESS=1; shift ;;
@@ -629,9 +646,48 @@ else
     fi
     sleep 2
     if launchctl list | awk '{print $3}' | grep -qx "$PLIST_LABEL"; then
-        log "LaunchAgent is loaded and running (PID: $(launchctl list | awk -v l="$PLIST_LABEL" '$3==l {print $1}'))."
+        AGENT_PID="$(launchctl list | awk -v l="$PLIST_LABEL" '$3==l {print $1}')"
+        if [[ "$AGENT_PID" == "-" ]]; then
+            warn "LaunchAgent is loaded but not running (crash-loop?); check $STATE_DIR/agent.launchd.log"
+        else
+            log "LaunchAgent is loaded and running (PID: $AGENT_PID)."
+        fi
     else
-        warn "LaunchAgent did not report as running; check $STATE_DIR/agent.launchd.log"
+        warn "LaunchAgent did not report as loaded; check $STATE_DIR/agent.launchd.log"
+    fi
+fi
+
+# --- scheduled power-on failsafe (pmset repeat) -------------------------------
+# RTC-based: boots a SHUT-DOWN Mac at the set time, so a machine that got shut
+# down is back on without human intervention. Deliberately 'poweron' (not
+# 'wakeorpoweron'): sleeping Macs are left alone — wake those over HID from
+# the endpoint. Works from a full shutdown with nothing running on the Mac.
+# Requires sudo: passwordless sudo applies silently, an interactive TTY
+# prompts, anything else prints the exact command to run by hand.
+
+if [[ "$POWERON_CANCEL" -eq 1 ]]; then
+    log "Cancelling repeating power events: sudo pmset repeat cancel"
+    if sudo -n pmset repeat cancel 2>/dev/null \
+        || { [[ -t 0 ]] && sudo pmset repeat cancel; }; then
+        log "Cancelled repeating power events."
+    else
+        warn "could not cancel the schedule (sudo pmset failed); run manually: sudo pmset repeat cancel"
+    fi
+elif [[ -n "$POWERON_SCHED" ]]; then
+    [[ "$POWERON_SCHED" =~ ^[MTWRFSU]+\ [0-9]{2}:[0-9]{2}:[0-9]{2}$ ]] \
+        || die "invalid --poweron schedule '$POWERON_SCHED' (want e.g. 'MTWRFSU 06:00:00')"
+    if [[ "$POWERON_FORCE" -eq 0 ]] \
+        && pmset -g sched 2>/dev/null | grep -qiE 'wakeorpoweron| poweron'; then
+        log "A repeating wake/power-on schedule already exists (see 'pmset -g sched'); leaving it."
+        log "Pass --poweron \"$POWERON_SCHED\" to replace it."
+    else
+        log "Setting scheduled power-on: sudo pmset repeat poweron $POWERON_SCHED"
+        if sudo -n pmset repeat poweron $POWERON_SCHED 2>/dev/null \
+            || { [[ -t 0 ]] && sudo pmset repeat poweron $POWERON_SCHED; }; then
+            log "Scheduled power-on set ($POWERON_SCHED)."
+        else
+            warn "schedule NOT set (sudo unavailable); run manually: sudo pmset repeat poweron $POWERON_SCHED"
+        fi
     fi
 fi
 
