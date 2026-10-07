@@ -102,6 +102,18 @@ Re-running `./install.sh` reconfigures the agent and restarts the LaunchAgent;
 `./install.sh --help` lists all options (allowlist, action enable/disable,
 transport, headless, uninstall). The steps below remain for manual setups.
 
+**Actions are fail-closed disabled by default** (including the Mode B power
+actions the endpoint's Web UI buttons trigger). Enable what this Mac should
+allow — for a full AV-control endpoint typically:
+
+```sh
+./install.sh --enable-launch --enable-quit \
+    --enable-sleep --enable-restart --enable-shutdown
+```
+
+Each action also has a `--disable-<action>` form; power actions are executed
+by the agent in software (`pmset` / System Events), not via HID chords.
+
 Run once in the foreground to pair and verify:
 
 ```sh

@@ -22,6 +22,9 @@ SET_ALLOW=0
 ALLOW_ARGS=()
 ENABLE_LAUNCH=""
 ENABLE_QUIT=""
+ENABLE_SLEEP=""
+ENABLE_RESTART=""
+ENABLE_SHUTDOWN=""
 TRANSPORT=""
 POLL_INTERVAL=""
 HEADLESS=0
@@ -115,6 +118,13 @@ AGENT OPTIONS
   --disable-launch     Disable the launch_app action.
   --enable-quit        Enable the quit_app action.
   --disable-quit       Disable the quit_app action.
+  --enable-sleep       Enable the sleep power action (pmset; agent-executed
+                       in Mode B). All actions are fail-closed DISABLED.
+  --disable-sleep      Disable the sleep action.
+  --enable-restart     Enable the restart power action (agent-executed).
+  --disable-restart    Disable the restart action.
+  --enable-shutdown    Enable the shutdown power action (agent-executed).
+  --disable-shutdown   Disable the shutdown action.
   --transport T        websocket (default) or polling.
   --poll-interval S    Polling interval, 2-30 (default 5).
   --headless           LaunchAgent runs the agent with --headless (no UI).
@@ -152,6 +162,12 @@ while [[ $# -gt 0 ]]; do
         --disable-launch) ENABLE_LAUNCH=0; shift ;;
         --enable-quit)    ENABLE_QUIT=1; shift ;;
         --disable-quit)   ENABLE_QUIT=0; shift ;;
+        --enable-sleep)    ENABLE_SLEEP=1; shift ;;
+        --disable-sleep)   ENABLE_SLEEP=0; shift ;;
+        --enable-restart)  ENABLE_RESTART=1; shift ;;
+        --disable-restart) ENABLE_RESTART=0; shift ;;
+        --enable-shutdown)  ENABLE_SHUTDOWN=1; shift ;;
+        --disable-shutdown) ENABLE_SHUTDOWN=0; shift ;;
         --transport)     TRANSPORT="${2:?--transport needs a value}"; shift 2 ;;
         --poll-interval) POLL_INTERVAL="${2:?--poll-interval needs a value}"; shift 2 ;;
         --headless)      HEADLESS=1; shift ;;
@@ -505,6 +521,9 @@ log "Applying configuration to ~/.maccontrol/agent.json"
 MCA_ALLOW_JSON="$ALLOW_JSON" \
 MCA_ENABLE_LAUNCH="$ENABLE_LAUNCH" \
 MCA_ENABLE_QUIT="$ENABLE_QUIT" \
+MCA_ENABLE_SLEEP="$ENABLE_SLEEP" \
+MCA_ENABLE_RESTART="$ENABLE_RESTART" \
+MCA_ENABLE_SHUTDOWN="$ENABLE_SHUTDOWN" \
 MCA_TRANSPORT="$TRANSPORT" \
 MCA_POLL_INTERVAL="$POLL_INTERVAL" \
 AGENT_DIR="$AGENT_DIR" \
@@ -523,6 +542,12 @@ if os.environ.get("MCA_ENABLE_LAUNCH"):
     state.enabled_commands["launch_app"] = os.environ["MCA_ENABLE_LAUNCH"] == "1"
 if os.environ.get("MCA_ENABLE_QUIT"):
     state.enabled_commands["quit_app"] = os.environ["MCA_ENABLE_QUIT"] == "1"
+if os.environ.get("MCA_ENABLE_SLEEP"):
+    state.enabled_commands["sleep"] = os.environ["MCA_ENABLE_SLEEP"] == "1"
+if os.environ.get("MCA_ENABLE_RESTART"):
+    state.enabled_commands["restart"] = os.environ["MCA_ENABLE_RESTART"] == "1"
+if os.environ.get("MCA_ENABLE_SHUTDOWN"):
+    state.enabled_commands["shutdown"] = os.environ["MCA_ENABLE_SHUTDOWN"] == "1"
 if os.environ.get("MCA_TRANSPORT"):
     if os.environ["MCA_TRANSPORT"] not in TRANSPORTS:
         sys.exit("ERROR: invalid --transport %r (want %s)" % (os.environ["MCA_TRANSPORT"], "/".join(TRANSPORTS)))
