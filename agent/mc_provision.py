@@ -41,10 +41,10 @@ import sys
 import time
 import urllib.parse
 
-KEY_LINE_RE = re.compile(r"^mck_[A-Za-z0-9]{20,}$")
-CREATED_LINE_RE = re.compile(r"^created (mckid_[A-Za-z0-9_-]+) \((.*)\)$")
+KEY_LINE_RE = re.compile(r"^mck_[A-Za-z0-9_-]{20,}$")
+CREATED_LINE_RE = re.compile(r"^created (\S+) \((.*)\)$")
 WIFI_CONNECTED_RE = re.compile(r"^connected ip=(\d{1,3}(?:\.\d{1,3}){3})\r?$", re.MULTILINE)
-KEY_ID_RE = re.compile(r"mckid_[A-Za-z0-9_-]+")
+KEY_ID_RE = re.compile(r"key-\d+")
 
 # Terminal signatures that mark a complete reply for each CLI command. The
 # console does NOT echo input (firmware cli.cpp handleChar only accumulates
@@ -55,9 +55,20 @@ WIFI_SET_DONE_RE = re.compile(
 WIFI_STATUS_DONE_RE = re.compile(
     r"connected ip=|not connected|usage:|unknown command")
 KEY_CREATE_DONE_RE = re.compile(
-    r"created mckid_|key store full|role must be|usage:|unknown command")
+    r"created key-|key store full|role must be|usage:|unknown command")
 ADMIN_SET_DONE_RE = re.compile(
     r"admin password (?:set|NOT set)|usage:|unknown command")
+# A crash/reboot mid-command (e.g. a task-watchdog panic under load) replays
+# the boot banner on the console; that both proves the device is alive again
+# and means the in-flight command was lost.
+BOOT_SEEN_RE = re.compile(r"ESP-ROM:esp32s3|Physical console = ADMIN")
+
+
+class DeviceRebooted(Exception):
+    """The device rebooted while a command was in flight (crash/watchdog).
+    The console buffer holds a fresh boot banner; retrying the phase is
+    safe: 'wifi set'/'admin set' are idempotent and a duplicate 'key create'
+    only spends one of the 8 key slots."""
 
 
 class ProvisionError(Exception):
@@ -153,12 +164,18 @@ def _run_cli_command(ser, buffer, consumed, cmd, settle_s, timeout_s=20.0,
     """
     if not done_res:
         raise ValueError("done_res must contain at least one reply signature")
+    text_before = "".join(buffer)
     ser.write(cmd.encode("utf-8") + b"\n")
     end = time.monotonic() + timeout_s
     matched_at = None
     while True:
         _drain_serial(ser, min(settle_s, max(0.1, end - time.monotonic())), buffer)
         text = "".join(buffer)
+        # A fresh boot banner after the command was sent means the device
+        # crashed/rebooted mid-command; the reply is never coming (though
+        # the serial buffer may replay the command after boot).
+        if BOOT_SEEN_RE.search(text[len(text_before):]):
+            raise DeviceRebooted()
         tail = text[consumed:]
         if matched_at is None:
             for r in done_res:
@@ -208,76 +225,94 @@ def cmd_serial(args):
             "'\"$VENV_DIR/bin/pip\" install esptool pyserial' (install.sh does "
             "this automatically for --flash/--provision)")
 
-    ser, buffer = _wait_for(serial_mod, args.port, re.compile(r"Physical console = ADMIN"),
-                            args.boot_timeout, args.reboot)
-    try:
-        log = getattr(sys, "_mc_console_log", None)
-        if log is not None:
-            log("serial: console ready on %s" % args.port)
-
-        result = {"port": args.port, "keys": {}}
-        if args.no_keys and not args.wifi_ssid and not args.admin_password:
-            raise ProvisionError("nothing to do: pass --wifi-ssid/--admin-password or drop --no-keys")
-
-        if args.wifi_ssid:
-            settle = args.settle
-            _, consumed = _run_cli_command(
-                ser, buffer, 0, "wifi set %s %s" % (args.wifi_ssid, args.wifi_pass),
-                settle, done_res=(WIFI_SET_DONE_RE,))
-            ip = None
-            deadline = time.monotonic() + args.wifi_timeout
-            while time.monotonic() < deadline:
-                out, consumed = _run_cli_command(
-                    ser, buffer, consumed, "wifi status", settle, timeout_s=10.0,
-                    done_res=(WIFI_STATUS_DONE_RE,))
-                m = WIFI_CONNECTED_RE.search(out)
-                if m:
-                    ip = m.group(1)
-                    break
-                if "not connected" in out and (time.monotonic() + settle) >= deadline:
-                    break
-            if ip is None:
+    log = getattr(sys, "_mc_console_log", None)
+    banner_re = re.compile(r"Physical console = ADMIN")
+    for attempt in (1, 2, 3):
+        # Only the first attempt pulses RTS: a later attempt follows a
+        # crash-reboot the device did on its own, and re-pulsing would just
+        # add another reboot.
+        ser, buffer = _wait_for(serial_mod, args.port, banner_re,
+                                args.boot_timeout, args.reboot and attempt == 1)
+        try:
+            if log is not None:
+                log("serial: console ready on %s (attempt %d/3)" % (args.port, attempt))
+            return _serial_phase(ser, buffer, args, log)
+        except DeviceRebooted:
+            if attempt == 3:
                 raise ProvisionError(
-                    "device did not connect to WiFi '%s' within %ds; check the "
-                    "SSID/password and re-run (phases are idempotent)"
-                    % (args.wifi_ssid, args.wifi_timeout))
-            result["ip"] = ip
+                    "device rebooted mid-provisioning three times (crash/watchdog "
+                    "under load — see firmware/docs/DEBUG-PROVISION-TWDT.md). "
+                    "Completed steps persist on the device; re-run to continue.")
             if log is not None:
-                log("serial: WiFi connected, ip=%s" % ip)
+                log("serial: device rebooted mid-command (crash/watchdog); "
+                    "retrying the phase")
+        finally:
+            ser.close()
 
-        if not args.no_keys:
-            consumed = consumed if args.wifi_ssid else 0
-            for role in ("READ", "CONTROL", "ADMIN"):
-                out, consumed = _run_cli_command(
-                    ser, buffer, consumed, "key create %s %s" % (role, args.keys_label),
-                    args.settle, done_res=(KEY_CREATE_DONE_RE,))
-                key_id, raw = _parse_key_output(out)
-                result["keys"][role] = {"key_id": key_id, "raw": raw}
-                if log is not None:
-                    log("serial: created %s key %s (raw key captured, not printed)"
-                        % (role, key_id or "?"))
 
-        if args.admin_password:
-            consumed = consumed if (args.wifi_ssid or not args.no_keys) else 0
-            out, _ = _run_cli_command(ser, buffer, consumed,
-                                      "admin set %s" % args.admin_password, args.settle,
-                                      done_res=(ADMIN_SET_DONE_RE,))
-            if "admin password set" not in out:
-                tail = "\n".join(l for l in out.splitlines() if l.strip())[-500:]
-                # The console does not echo input, so the password never
-                # appears in the reply; scrub it anyway before it can reach
-                # logs or error text.
-                for token in (args.admin_password,):
-                    tail = tail.replace(token, "***")
-                raise ProvisionError("admin set failed: " + (tail or "(no output)"))
+def _serial_phase(ser, buffer, args, log):
+    """One attempt at the full serial phase against a ready console."""
+    result = {"port": args.port, "keys": {}}
+    if args.no_keys and not args.wifi_ssid and not args.admin_password:
+        raise ProvisionError("nothing to do: pass --wifi-ssid/--admin-password or drop --no-keys")
+
+    if args.wifi_ssid:
+        settle = args.settle
+        _, consumed = _run_cli_command(
+            ser, buffer, 0, "wifi set %s %s" % (args.wifi_ssid, args.wifi_pass),
+            settle, done_res=(WIFI_SET_DONE_RE,))
+        ip = None
+        deadline = time.monotonic() + args.wifi_timeout
+        while time.monotonic() < deadline:
+            out, consumed = _run_cli_command(
+                ser, buffer, consumed, "wifi status", settle, timeout_s=10.0,
+                done_res=(WIFI_STATUS_DONE_RE,))
+            m = WIFI_CONNECTED_RE.search(out)
+            if m:
+                ip = m.group(1)
+                break
+            if "not connected" in out and (time.monotonic() + settle) >= deadline:
+                break
+        if ip is None:
+            raise ProvisionError(
+                "device did not connect to WiFi '%s' within %ds; check the "
+                "SSID/password and re-run (phases are idempotent)"
+                % (args.wifi_ssid, args.wifi_timeout))
+        result["ip"] = ip
+        if log is not None:
+            log("serial: WiFi connected, ip=%s" % ip)
+
+    if not args.no_keys:
+        consumed = consumed if args.wifi_ssid else 0
+        for role in ("READ", "CONTROL", "ADMIN"):
+            out, consumed = _run_cli_command(
+                ser, buffer, consumed, "key create %s %s" % (role, args.keys_label),
+                args.settle, done_res=(KEY_CREATE_DONE_RE,))
+            key_id, raw = _parse_key_output(out)
+            result["keys"][role] = {"key_id": key_id, "raw": raw}
             if log is not None:
-                log("serial: admin password set")
+                log("serial: created %s key %s (raw key captured, not printed)"
+                    % (role, key_id or "?"))
 
-        json.dump(result, sys.stdout)
-        sys.stdout.write("\n")
-        return 0
-    finally:
-        ser.close()
+    if args.admin_password:
+        consumed = consumed if (args.wifi_ssid or not args.no_keys) else 0
+        out, _ = _run_cli_command(ser, buffer, consumed,
+                                  "admin set %s" % args.admin_password, args.settle,
+                                  done_res=(ADMIN_SET_DONE_RE,))
+        if "admin password set" not in out:
+            tail = "\n".join(l for l in out.splitlines() if l.strip())[-500:]
+            # The console does not echo input, so the password never
+            # appears in the reply; scrub it anyway before it can reach
+            # logs or error text.
+            for token in (args.admin_password,):
+                tail = tail.replace(token, "***")
+            raise ProvisionError("admin set failed: " + (tail or "(no output)"))
+        if log is not None:
+            log("serial: admin password set")
+
+    json.dump(result, sys.stdout)
+    sys.stdout.write("\n")
+    return 0
 
 
 # --------------------------------------------------------------------------
@@ -463,10 +498,10 @@ def _selftest():
     # The console does not echo input and prints no prompt — fixtures match
     # firmware/src/cli.cpp output shapes exactly.
     out = _parse_key_output(
-        "created mckid_a1b2c3d4e5f6 (install)\r\n"
+        "created key-01 (install)\r\n"
         "API key (shown once, store it now):\r\n"
-        "mck_9f8e7d6c5b4a3210f1e2d3c4b5a69788\r\n")
-    assert out == ("mckid_a1b2c3d4e5f6", "mck_9f8e7d6c5b4a3210f1e2d3c4b5a69788"), out
+        "mck_9f8e7d6c5b4a3-210f1e2d3c4b5a69788\r\n")
+    assert out == ("key-01", "mck_9f8e7d6c5b4a3-210f1e2d3c4b5a69788"), out
 
     try:
         _parse_key_output("key store full (max 8 active keys)\r\n")
@@ -482,8 +517,11 @@ def _selftest():
         "wifi credentials saved; reconnecting\r\n")  # 'wifi set' reply must not
     # trip the 'connected ip=' matcher while polling
 
-    m = CREATED_LINE_RE.match("created mckid_x (my label)")
-    assert m and m.group(2) == "my label", m
+    m = CREATED_LINE_RE.match("created key-02 (my label)")
+    assert m and m.group(1) == "key-02" and m.group(2) == "my label", m
+    # Real raw keys are base64url (may contain '-' and '_'), e.g. the
+    # NDC install: mck_JW6v9B0jHfmPH-OrR1jsIRDFlX9RsQ0ZmJtM7yOVA2o
+    assert KEY_LINE_RE.match("mck_JW6v9B0jHfmPH-OrR1jsIRDFlX9RsQ0ZmJtM7yOVA2o")
     print("selftest: ok")
     return 0
 

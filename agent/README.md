@@ -30,7 +30,11 @@ steps. The flashed firmware is stock: the device keeps its factory
 
 Run interactively and the installer asks whether to flash + set up an
 endpoint (answering no — or passing `--no-flash` — gives an agent-only
-install). To script it end to end, pass the flags explicitly:
+install). After the credential prompts it asks you to connect the board's
+'com' (CH343) cable and **reboot the board** before the serial console
+phase — provisioning only works against a freshly booted board; one that
+has been sitting plugged in may sit silent and fail. To script it end to
+end, pass the flags explicitly:
 
 ```sh
 cd agent
@@ -71,6 +75,12 @@ exactly once at install time, written to `~/.maccontrol/endpoint.keys`
 and never stored anywhere else. The raw keys are shown once by the device and
 never logged; if the key store is full (8 active), revoke old ones over the
 serial console (`key list` / `key revoke <key_id>`) or use `--no-keys`.
+
+If the device crashes/reboots mid-phase (task-watchdog under load — known on
+factory-fresh devices, see `../firmware/docs/DEBUG-PROVISION-TWDT.md`), the
+serial phase detects the boot banner and retries automatically (up to 3
+attempts); a command the device replayed from its serial buffer may spend an
+extra key slot, which is harmless.
 
 The provisioner itself is `mc_provision.py` (stdlib + pyserial, driven by
 install.sh); its `serial` and `network` subcommands are independently

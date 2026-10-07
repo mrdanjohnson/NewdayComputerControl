@@ -36,6 +36,11 @@ phase doc for the work at hand. Project root:
 >    long-lived-WS path fixed (outbound WS dies ~30 s) or formally accept.
 > 5. Known minor: OTA upload 400/409 envelopes reuse the generic
 >    `bad_request` message text (code is correct) — fix next firmware touch.
+> 6. **OPEN (2026-10-07):** task-watchdog panic during serial `key create`
+>    on a factory-fresh device at the NDC install — provisioner now retries
+>    around it (`agent/mc_provision.py`), but the firmware root cause is
+>    unidentified. Facts, decoded backtrace, and capture list:
+>    `docs/DEBUG-PROVISION-TWDT.md`.
 > 6. Phase 6 leftovers (deferred, documented in PHASE6.md): Q-SYS/Companion
 >    modules (need target hardware), Ethernet (needs PHY add-on), monitored-
 >    app registry, ledger durable-stream growth policy (needs a spec

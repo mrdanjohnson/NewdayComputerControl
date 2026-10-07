@@ -78,7 +78,10 @@ ONE INSTALLER (flash + provision + pair + install, start to finish)
   API keys + admin password over the serial console, discovers the device on
   the network, opens the pairing window, pairs this Mac, and finishes with
   the normal config + LaunchAgent steps. Phases are idempotent: a failure
-  tells you what to fix, and re-running continues where it left off.
+  tells you what to fix, and re-running continues where it left off. The
+  interactive run asks you to connect/reboot the board before the serial
+  phase (a freshly booted board is required); scripted runs must power-cycle
+  the board themselves if it has been plugged in for a while.
 
 RE-RUNNING RECONFIGURES
   ./install.sh --allow com.apple.Terminal            # change the allowlist
@@ -366,6 +369,21 @@ if [[ "$PROVISION" -eq 1 ]]; then
         [[ -n "$WIFI_PASS" ]] || die "WiFi password cannot be empty"
     fi
     prompt_admin_password
+
+    if [[ -t 0 ]]; then
+        cat >&2 <<'EOF'
+
+  Next: the serial console session opens. It only works against a FRESHLY
+  BOOTED board — one that has been sitting plugged in can sit silent and
+  fail with "device did not become ready".
+
+    - If the board's 'com' (CH343 UART) cable is not connected to this Mac,
+      plug it in now (not the 'USB' port — that one is HID-only).
+    - Then reboot the board: unplug/replug the cable, or press RESET.
+      Do NOT hold the BOOT button (that forces download mode, no console).
+EOF
+        read -r -p "  Press Enter once the board is connected and rebooted... " _ || true
+    fi
 
     SERIAL_ARGS=(--port "$SERIAL_PORT" --reboot --admin-password "$ADMIN_PASSWORD"
                  --wifi-ssid "$WIFI_SSID" --wifi-pass "$WIFI_PASS")

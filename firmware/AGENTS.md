@@ -92,6 +92,12 @@ in `.venv` themselves. The Mac agent runs from `../agent` with its own venv
   (fragmentation presents exactly like an AP problem). Do NOT add
   outbound-probe "supervisors" — tried, reverted, documented in
   `docs/DEBUG-PHASE4-AT11.md`.
+- **Serial `key create` can crash with a task-watchdog panic on a
+  factory-fresh device right after WiFi association** (2026-10-07, NDC
+  install). The agent provisioner detects the reboot and retries
+  (`agent/mc_provision.py`), but the firmware cause is open — facts and
+  capture list in `docs/DEBUG-PROVISION-TWDT.md`. If it reproduces, get the
+  FULL "Task watchdog got triggered" line (starved task name).
 - **The bench answers mDNS as `control-graphics.local`** (10.10.40.242);
   `mac-b53478.local` is a stale name macOS intermittently resolves to a
   dead/wrong IP. An AT agent whose state file holds the old hostname
