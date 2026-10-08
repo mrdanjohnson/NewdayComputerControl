@@ -2,6 +2,8 @@
 
 Prepared October 7, 2026, after reviewing the project README, architecture specification, current Python agent, firmware agent surface, and deployment notes.
 
+Implementation update, October 8: the native service, SwiftUI frontend, migration controls, compatibility fixtures, and universal development packaging are implemented under [`native/`](native/README.md). The isolated checks and remaining hardware, permission, mixed-deployment, and distribution gates are recorded in [`native/VERIFICATION.md`](native/VERIFICATION.md). This implementation does not establish that the hardware acceptance gates below have passed, and no existing Python service has been replaced during development.
+
 ## Product and platform
 
 Build a native **macOS Swift agent and SwiftUI frontend** to replace `agent/maccontrol_agent`. The user's clarification is that this application runs on the controlled Mac, communicates with the ESP32, and executes commands on that Mac. An iOS app would be a separate controller and is outside this proposal.

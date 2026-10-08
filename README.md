@@ -13,6 +13,16 @@ The normative protocol and rationale are
 `MacControl_Deterministic_Architecture_Spec.md` (chapters cited as §N
 below). Phase status and bring-up records live in `firmware/docs/`.
 
+## Native macOS replacement
+
+The Swift agent and SwiftUI frontend are now in [`native/`](native/README.md),
+with an Xcode project and a universal local development app build. They use
+the existing protocol-v2 ESP32 interface and include reversible Python import,
+cutover, and rollback. Python remains available for legacy Macs; its source,
+installer, and firmware are unchanged. See the native setup guide and
+[`native/VERIFICATION.md`](native/VERIFICATION.md) for completed checks and
+remaining hardware/distribution release gates.
+
 ## The two components
 
 ### 1. The endpoint (ESP32 firmware, `firmware/`)

@@ -1,0 +1,5 @@
+build/
+Packages/*/.build/
+*.xcuserstate
+xcuserdata/
+.DS_Store

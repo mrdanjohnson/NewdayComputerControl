@@ -1,0 +1,365 @@
+// !$*UTF8*$!
+{
+  "archiveVersion" = 1;
+  "classes" = {
+  };
+  "objectVersion" = 56;
+  "objects" = {
+    "39C4F5628B04C9CE96817B82" = {
+      "isa" = "PBXFileReference";
+      "lastKnownFileType" = "sourcecode.swift";
+      "path" = "MacControlApp/AppModel.swift";
+      "sourceTree" = "SOURCE_ROOT";
+    };
+    "7F86706677FE6E38CD09DA7D" = {
+      "isa" = "PBXFileReference";
+      "lastKnownFileType" = "sourcecode.swift";
+      "path" = "MacControlApp/MacControlApp.swift";
+      "sourceTree" = "SOURCE_ROOT";
+    };
+    "F14E4E23569B7480046FD4FB" = {
+      "isa" = "PBXFileReference";
+      "lastKnownFileType" = "sourcecode.swift";
+      "path" = "MacControlAgentService/Service.swift";
+      "sourceTree" = "SOURCE_ROOT";
+    };
+    "CD24EF5AD4150BA175B9A888" = {
+      "isa" = "PBXFileReference";
+      "lastKnownFileType" = "text.plist.xml";
+      "path" = "Resources/dev.maccontrol.native.agent.plist";
+      "sourceTree" = "SOURCE_ROOT";
+    };
+    "EB8F82449F9094BF50B869D4" = {
+      "isa" = "PBXFileReference";
+      "lastKnownFileType" = "image.icns";
+      "path" = "Resources/MacControl.icns";
+      "sourceTree" = "SOURCE_ROOT";
+    };
+    "429D0230C59596BAEA6CC819" = {
+      "isa" = "PBXFileReference";
+      "lastKnownFileType" = "text.plist.xml";
+      "path" = "Resources/Info.plist";
+      "sourceTree" = "SOURCE_ROOT";
+    };
+    "64A02785DE475B2C650BA2BE" = {
+      "isa" = "PBXFileReference";
+      "lastKnownFileType" = "text.plist.xml";
+      "path" = "Resources/ServiceInfo.plist";
+      "sourceTree" = "SOURCE_ROOT";
+    };
+    "D52EF76069BA3B65870F6F9A" = {
+      "isa" = "PBXFileReference";
+      "lastKnownFileType" = "text.plist.xml";
+      "path" = "Resources/Agent.entitlements";
+      "sourceTree" = "SOURCE_ROOT";
+    };
+    "FD7386993452CC667350B4BB" = {
+      "isa" = "XCLocalSwiftPackageReference";
+      "relativePath" = "Packages/MacControlCore";
+    };
+    "8BCD5BC4CDFDF0918087C782" = {
+      "isa" = "PBXFileReference";
+      "explicitFileType" = "wrapper.application";
+      "path" = "MacControl.app";
+      "sourceTree" = "BUILT_PRODUCTS_DIR";
+    };
+    "B42AEEEED7D22535F474ACB7" = {
+      "isa" = "PBXFileReference";
+      "explicitFileType" = "compiled.mach-o.executable";
+      "path" = "MacControlAgentService";
+      "sourceTree" = "BUILT_PRODUCTS_DIR";
+    };
+    "38FC8AFF728F566D9DFEAB4B" = {
+      "isa" = "XCSwiftPackageProductDependency";
+      "package" = "FD7386993452CC667350B4BB";
+      "productName" = "MacControlCore";
+    };
+    "9F770B4E581023467AB85A21" = {
+      "isa" = "PBXBuildFile";
+      "productRef" = "38FC8AFF728F566D9DFEAB4B";
+    };
+    "2B1E98C77D7CD9ABCB966828" = {
+      "isa" = "PBXFrameworksBuildPhase";
+      "buildActionMask" = 2147483647;
+      "files" = ("9F770B4E581023467AB85A21");
+      "runOnlyForDeploymentPostprocessing" = 0;
+    };
+    "C397D7453A90C81BB3D9EEA2" = {
+      "isa" = "XCBuildConfiguration";
+      "buildSettings" = {
+        "MACOSX_DEPLOYMENT_TARGET" = "13.0";
+        "SWIFT_VERSION" = "5.0";
+        "CODE_SIGN_STYLE" = "Manual";
+        "CODE_SIGN_IDENTITY" = "-";
+        "ENABLE_HARDENED_RUNTIME" = "YES";
+        "CLANG_ENABLE_MODULES" = "YES";
+        "SWIFT_EMIT_LOC_STRINGS" = "YES";
+        "SDKROOT" = "macosx";
+        "SUPPORTED_PLATFORMS" = "macosx";
+        "ONLY_ACTIVE_ARCH" = "YES";
+        "PRODUCT_NAME" = "MacControlAgentService";
+        "PRODUCT_BUNDLE_IDENTIFIER" = "dev.maccontrol.native.agent";
+        "CODE_SIGN_ENTITLEMENTS" = "Resources/Agent.entitlements";
+        "GENERATE_INFOPLIST_FILE" = "NO";
+        "OTHER_LDFLAGS" = ("-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", "$(SRCROOT)/Resources/ServiceInfo.plist");
+        "SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+        "DEBUG_INFORMATION_FORMAT" = "dwarf";
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG";
+      };
+      "name" = "Debug";
+    };
+    "DE17A6F135B37F3B17A696DF" = {
+      "isa" = "XCBuildConfiguration";
+      "buildSettings" = {
+        "MACOSX_DEPLOYMENT_TARGET" = "13.0";
+        "SWIFT_VERSION" = "5.0";
+        "CODE_SIGN_STYLE" = "Manual";
+        "CODE_SIGN_IDENTITY" = "-";
+        "ENABLE_HARDENED_RUNTIME" = "YES";
+        "CLANG_ENABLE_MODULES" = "YES";
+        "SWIFT_EMIT_LOC_STRINGS" = "YES";
+        "SDKROOT" = "macosx";
+        "SUPPORTED_PLATFORMS" = "macosx";
+        "ONLY_ACTIVE_ARCH" = "YES";
+        "PRODUCT_NAME" = "MacControlAgentService";
+        "PRODUCT_BUNDLE_IDENTIFIER" = "dev.maccontrol.native.agent";
+        "CODE_SIGN_ENTITLEMENTS" = "Resources/Agent.entitlements";
+        "GENERATE_INFOPLIST_FILE" = "NO";
+        "OTHER_LDFLAGS" = ("-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", "$(SRCROOT)/Resources/ServiceInfo.plist");
+        "SWIFT_OPTIMIZATION_LEVEL" = "-O";
+        "DEBUG_INFORMATION_FORMAT" = "dwarf-with-dsym";
+      };
+      "name" = "Release";
+    };
+    "837641246E81296AC60B87BC" = {
+      "isa" = "XCConfigurationList";
+      "buildConfigurations" = ("C397D7453A90C81BB3D9EEA2", "DE17A6F135B37F3B17A696DF");
+      "defaultConfigurationIsVisible" = 0;
+      "defaultConfigurationName" = "Release";
+    };
+    "8982C5C1C55F9A94D5869586" = {
+      "isa" = "PBXBuildFile";
+      "fileRef" = "F14E4E23569B7480046FD4FB";
+    };
+    "5F9933B2BB266EAD0E00634B" = {
+      "isa" = "PBXSourcesBuildPhase";
+      "buildActionMask" = 2147483647;
+      "files" = ("8982C5C1C55F9A94D5869586");
+      "runOnlyForDeploymentPostprocessing" = 0;
+    };
+    "623C73A6F24D88D84D2235C8" = {
+      "isa" = "PBXNativeTarget";
+      "buildConfigurationList" = "837641246E81296AC60B87BC";
+      "buildPhases" = ("5F9933B2BB266EAD0E00634B", "2B1E98C77D7CD9ABCB966828");
+      "buildRules" = ();
+      "dependencies" = ();
+      "name" = "MacControlAgentService";
+      "packageProductDependencies" = ("38FC8AFF728F566D9DFEAB4B");
+      "productName" = "MacControlAgentService";
+      "productReference" = "B42AEEEED7D22535F474ACB7";
+      "productType" = "com.apple.product-type.tool";
+    };
+    "18FB61318FECB10299E2EC6A" = {
+      "isa" = "PBXContainerItemProxy";
+      "containerPortal" = "98F54143AB4E86B28C3AFEE0";
+      "proxyType" = 1;
+      "remoteGlobalIDString" = "623C73A6F24D88D84D2235C8";
+      "remoteInfo" = "MacControlAgentService";
+    };
+    "5359EB3E03994EAF3E82669D" = {
+      "isa" = "PBXTargetDependency";
+      "target" = "623C73A6F24D88D84D2235C8";
+      "targetProxy" = "18FB61318FECB10299E2EC6A";
+    };
+    "2F572CBAE3F90F0CFB731C73" = {
+      "isa" = "XCSwiftPackageProductDependency";
+      "package" = "FD7386993452CC667350B4BB";
+      "productName" = "MacControlCore";
+    };
+    "8A9BE751C24D1EC5F332E527" = {
+      "isa" = "PBXBuildFile";
+      "productRef" = "2F572CBAE3F90F0CFB731C73";
+    };
+    "624D0503EC8FAD9DEB266B14" = {
+      "isa" = "PBXFrameworksBuildPhase";
+      "buildActionMask" = 2147483647;
+      "files" = ("8A9BE751C24D1EC5F332E527");
+      "runOnlyForDeploymentPostprocessing" = 0;
+    };
+    "8B63A0393819EF9DE7F2B473" = {
+      "isa" = "XCBuildConfiguration";
+      "buildSettings" = {
+        "MACOSX_DEPLOYMENT_TARGET" = "13.0";
+        "SWIFT_VERSION" = "5.0";
+        "CODE_SIGN_STYLE" = "Manual";
+        "CODE_SIGN_IDENTITY" = "-";
+        "ENABLE_HARDENED_RUNTIME" = "YES";
+        "CLANG_ENABLE_MODULES" = "YES";
+        "SWIFT_EMIT_LOC_STRINGS" = "YES";
+        "SDKROOT" = "macosx";
+        "SUPPORTED_PLATFORMS" = "macosx";
+        "ONLY_ACTIVE_ARCH" = "YES";
+        "PRODUCT_NAME" = "MacControl";
+        "PRODUCT_BUNDLE_IDENTIFIER" = "dev.maccontrol.native";
+        "INFOPLIST_FILE" = "Resources/Info.plist";
+        "GENERATE_INFOPLIST_FILE" = "NO";
+        "LD_RUNPATH_SEARCH_PATHS" = ("$(inherited)", "@executable_path/../Frameworks");
+        "SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+        "DEBUG_INFORMATION_FORMAT" = "dwarf";
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG";
+      };
+      "name" = "Debug";
+    };
+    "281FF16EF2B60E76A20BAD7F" = {
+      "isa" = "XCBuildConfiguration";
+      "buildSettings" = {
+        "MACOSX_DEPLOYMENT_TARGET" = "13.0";
+        "SWIFT_VERSION" = "5.0";
+        "CODE_SIGN_STYLE" = "Manual";
+        "CODE_SIGN_IDENTITY" = "-";
+        "ENABLE_HARDENED_RUNTIME" = "YES";
+        "CLANG_ENABLE_MODULES" = "YES";
+        "SWIFT_EMIT_LOC_STRINGS" = "YES";
+        "SDKROOT" = "macosx";
+        "SUPPORTED_PLATFORMS" = "macosx";
+        "ONLY_ACTIVE_ARCH" = "YES";
+        "PRODUCT_NAME" = "MacControl";
+        "PRODUCT_BUNDLE_IDENTIFIER" = "dev.maccontrol.native";
+        "INFOPLIST_FILE" = "Resources/Info.plist";
+        "GENERATE_INFOPLIST_FILE" = "NO";
+        "LD_RUNPATH_SEARCH_PATHS" = ("$(inherited)", "@executable_path/../Frameworks");
+        "SWIFT_OPTIMIZATION_LEVEL" = "-O";
+        "DEBUG_INFORMATION_FORMAT" = "dwarf-with-dsym";
+      };
+      "name" = "Release";
+    };
+    "3667E0A0C8FB580B1D21C114" = {
+      "isa" = "XCConfigurationList";
+      "buildConfigurations" = ("8B63A0393819EF9DE7F2B473", "281FF16EF2B60E76A20BAD7F");
+      "defaultConfigurationIsVisible" = 0;
+      "defaultConfigurationName" = "Release";
+    };
+    "A2761FCC91BC1FADF14C0B5C" = {
+      "isa" = "PBXBuildFile";
+      "fileRef" = "39C4F5628B04C9CE96817B82";
+    };
+    "D0B9DE65CDF7333BD9D3CC57" = {
+      "isa" = "PBXBuildFile";
+      "fileRef" = "7F86706677FE6E38CD09DA7D";
+    };
+    "2D764CD838DB39F040AA7EC4" = {
+      "isa" = "PBXSourcesBuildPhase";
+      "buildActionMask" = 2147483647;
+      "files" = ("A2761FCC91BC1FADF14C0B5C", "D0B9DE65CDF7333BD9D3CC57");
+      "runOnlyForDeploymentPostprocessing" = 0;
+    };
+    "330E01005A638FE41F25C949" = {
+      "isa" = "PBXBuildFile";
+      "fileRef" = "EB8F82449F9094BF50B869D4";
+    };
+    "06F5DC629BD46AAFD46564D1" = {
+      "isa" = "PBXResourcesBuildPhase";
+      "buildActionMask" = 2147483647;
+      "files" = ("330E01005A638FE41F25C949");
+      "runOnlyForDeploymentPostprocessing" = 0;
+    };
+    "A938F91E74DEA75B29C23D2D" = {
+      "isa" = "PBXBuildFile";
+      "fileRef" = "B42AEEEED7D22535F474ACB7";
+      "settings" = {
+        "ATTRIBUTES" = ("CodeSignOnCopy");
+      };
+    };
+    "6E398B1B591B64AF4F0654C7" = {
+      "isa" = "PBXCopyFilesBuildPhase";
+      "buildActionMask" = 2147483647;
+      "files" = ("A938F91E74DEA75B29C23D2D");
+      "runOnlyForDeploymentPostprocessing" = 0;
+      "dstPath" = "";
+      "dstSubfolderSpec" = 6;
+      "name" = "Embed native agent";
+    };
+    "EF949D41132ACF16FF19BF5F" = {
+      "isa" = "PBXBuildFile";
+      "fileRef" = "CD24EF5AD4150BA175B9A888";
+    };
+    "E9DC814FFE71BB8167507B82" = {
+      "isa" = "PBXCopyFilesBuildPhase";
+      "buildActionMask" = 2147483647;
+      "files" = ("EF949D41132ACF16FF19BF5F");
+      "runOnlyForDeploymentPostprocessing" = 0;
+      "dstPath" = "Contents/Library/LaunchAgents";
+      "dstSubfolderSpec" = 1;
+      "name" = "Embed LaunchAgent configuration";
+    };
+    "7D1043473D55BFA90E8530D3" = {
+      "isa" = "PBXNativeTarget";
+      "buildConfigurationList" = "3667E0A0C8FB580B1D21C114";
+      "buildPhases" = ("2D764CD838DB39F040AA7EC4", "624D0503EC8FAD9DEB266B14", "06F5DC629BD46AAFD46564D1", "6E398B1B591B64AF4F0654C7", "E9DC814FFE71BB8167507B82");
+      "buildRules" = ();
+      "dependencies" = ("5359EB3E03994EAF3E82669D");
+      "name" = "MacControl";
+      "packageProductDependencies" = ("2F572CBAE3F90F0CFB731C73");
+      "productName" = "MacControl";
+      "productReference" = "8BCD5BC4CDFDF0918087C782";
+      "productType" = "com.apple.product-type.application";
+    };
+    "FBDC4F23F93125BBEEAE800C" = {
+      "isa" = "PBXGroup";
+      "children" = ("8BCD5BC4CDFDF0918087C782", "B42AEEEED7D22535F474ACB7");
+      "name" = "Products";
+      "sourceTree" = "<group>";
+    };
+    "E50290A24C49A459B43487C5" = {
+      "isa" = "PBXGroup";
+      "children" = ("39C4F5628B04C9CE96817B82", "7F86706677FE6E38CD09DA7D", "F14E4E23569B7480046FD4FB", "CD24EF5AD4150BA175B9A888", "EB8F82449F9094BF50B869D4", "429D0230C59596BAEA6CC819", "64A02785DE475B2C650BA2BE", "D52EF76069BA3B65870F6F9A", "FBDC4F23F93125BBEEAE800C");
+      "sourceTree" = "<group>";
+    };
+    "9E232BE73FECBBF8659C79E7" = {
+      "isa" = "XCBuildConfiguration";
+      "buildSettings" = {
+        "MACOSX_DEPLOYMENT_TARGET" = "13.0";
+        "SWIFT_VERSION" = "5.0";
+        "SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+        "DEBUG_INFORMATION_FORMAT" = "dwarf";
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG";
+      };
+      "name" = "Debug";
+    };
+    "95126388EE2677EABF3CF99B" = {
+      "isa" = "XCBuildConfiguration";
+      "buildSettings" = {
+        "MACOSX_DEPLOYMENT_TARGET" = "13.0";
+        "SWIFT_VERSION" = "5.0";
+        "SWIFT_OPTIMIZATION_LEVEL" = "-O";
+        "DEBUG_INFORMATION_FORMAT" = "dwarf-with-dsym";
+      };
+      "name" = "Release";
+    };
+    "614471660AA131A99883C67C" = {
+      "isa" = "XCConfigurationList";
+      "buildConfigurations" = ("9E232BE73FECBBF8659C79E7", "95126388EE2677EABF3CF99B");
+      "defaultConfigurationIsVisible" = 0;
+      "defaultConfigurationName" = "Release";
+    };
+    "98F54143AB4E86B28C3AFEE0" = {
+      "isa" = "PBXProject";
+      "attributes" = {
+        "BuildIndependentTargetsInParallel" = "YES";
+        "LastUpgradeCheck" = "2700";
+      };
+      "buildConfigurationList" = "614471660AA131A99883C67C";
+      "compatibilityVersion" = "Xcode 14.0";
+      "developmentRegion" = "en";
+      "hasScannedForEncodings" = 0;
+      "knownRegions" = ("en", "Base");
+      "mainGroup" = "E50290A24C49A459B43487C5";
+      "productRefGroup" = "FBDC4F23F93125BBEEAE800C";
+      "projectDirPath" = "";
+      "projectRoot" = "";
+      "packageReferences" = ("FD7386993452CC667350B4BB");
+      "targets" = ("7D1043473D55BFA90E8530D3", "623C73A6F24D88D84D2235C8");
+    };
+  };
+  "rootObject" = "98F54143AB4E86B28C3AFEE0";
+}
