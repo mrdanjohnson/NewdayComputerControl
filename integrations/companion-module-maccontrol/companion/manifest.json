@@ -1,0 +1,27 @@
+{
+	"$schema": "https://raw.githubusercontent.com/bitfocus/companion-module-base/main/assets/manifest.schema.json",
+	"id": "maccontrol-maccontrol",
+	"name": "MacControl Endpoint",
+	"shortname": "MacControl",
+	"description": "Control a MacControl ESP32 endpoint: trigger macros, send power commands, and monitor Mac/agent state.",
+	"type": "connection",
+	"version": "1.0.0",
+	"license": "MIT",
+	"repository": "https://github.com/danieljohnson/companion-module-maccontrol",
+	"bugs": "https://github.com/danieljohnson/companion-module-maccontrol/issues",
+	"keywords": ["maccontrol", "esp32", "mac", "macro", "power"],
+	"legacyIds": [],
+	"maintainers": [
+		{
+			"name": "Daniel Johnson"
+		}
+	],
+	"runtime": {
+		"type": "node22",
+		"api": "nodejs-ipc",
+		"apiVersion": "0.0.0",
+		"entrypoint": "../src/main.js"
+	},
+	"manufacturer": "MacControl",
+	"products": ["MacControl Endpoint"]
+}

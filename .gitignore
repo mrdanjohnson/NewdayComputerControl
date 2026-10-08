@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+._*
+.AppleDouble
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node (Companion module)
+node_modules/
+
+# PlatformIO build artifacts (never source)
+firmware/.pio/
+
+# Logs and local state
+*.log
+*.tmp
+
+# Editor/OS noise
+.vscode/
+.idea/

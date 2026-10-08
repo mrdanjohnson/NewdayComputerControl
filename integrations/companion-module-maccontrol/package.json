@@ -1,0 +1,20 @@
+{
+	"name": "companion-module-maccontrol",
+	"version": "1.0.0",
+	"description": "Bitfocus Companion module for MacControl ESP32 endpoints",
+	"type": "module",
+	"main": "src/main.js",
+	"scripts": {
+		"test": "node --test test/state.test.mjs test/api.test.mjs",
+		"test:unit": "node --test test/state.test.mjs test/api.test.mjs",
+		"test:live": "node --test test/api.live.test.mjs",
+		"check": "companion-module-check"
+	},
+	"license": "MIT",
+	"dependencies": {
+		"@companion-module/base": "^2.1.0"
+	},
+	"devDependencies": {
+		"@companion-module/tools": "^2.2.0"
+	}
+}
