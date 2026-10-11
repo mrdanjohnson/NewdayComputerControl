@@ -13,6 +13,24 @@ MacControl **2.1.1 (build 3)** was rebuilt from the current workspace for the ne
 
 This refresh did not flash or provision hardware, install/register the app, change any live agent, or repeat the earlier XPC smoke checks. It is ad hoc signed for local testing. Physical USB flashing/provisioning on the 16 MB board remains pending.
 
+## Background-service startup fix — October 11, 2026
+
+MacControl **2.1.2 (build 4)** fixes the service startup failure seen during USB setup on this Mac. The real `SMAppService` job passed `Contents/MacOS/MacControlAgentService` as a relative argv[0]. Resolving that against the working directory made the frontend signature lookup fail, and the helper exited with code 1 repeatedly. The wizard then timed out waiting for the pair/start XPC request and displayed an unrelated migration message.
+
+The service now obtains its running executable path from the kernel with `proc_pidpath` before locating the sibling frontend. Frontend/helper signing checks are retained. Setup checks service responsiveness before USB work, Register service repairs an enabled but unresponsive registration, and ordinary setup timeouts no longer mention migration. Loading saved device credentials disables flashing so recovery can use Finish network / pairing.
+
+Verification: reproduced the old helper's signature lookup failure with a relative argv[0] and an unrelated working directory. The new Debug helper passes both absolute and relative argv startup checks without loading personal configuration or registering a test service. All **33 Swift tests pass**. Universal Release and Debug builds succeed, and release package/signature/tool/firmware checks pass. Firmware remains **1.6.1-phase6**. The full isolated XPC smoke was not rerun because the real native service is registered; the new startup check does not replace it. Physical provisioning on the new board got past USB setup, but successful native pairing remains pending until the user runs the corrected build.
+
+Outputs: `build/MacControl.app`, `build/MacControl-2.1.2.zip`, `build/startup-smoke.log`, and `build/release-verification-2.1.2.json`. This remains an ad hoc signed local test package.
+
+## Frontend reopening fix — October 11, 2026
+
+MacControl **2.1.3 (build 5)** fixes the helper claiming the frontend's enclosing app bundle. Launch Services logs showed attempts to open `dev.maccontrol.native` activating the running `MacControlAgentService` instead, leaving no frontend process or menu-bar icon. The helper now uses the main CFRunLoop for XPC, workspace notifications and IOKit callbacks without creating NSApplication, and its embedded metadata marks it as background-only.
+
+Universal Release and Debug builds, all **33 Swift tests**, bundle/signature/tool/firmware checks, both executable-path startup cases, and background system sampling pass. The isolated XPC smoke passes configuration exchange, identity mutation refusal, continued service operation after frontend exit, and untrusted peer rejection. Its temporary service/state were removed. The standalone frontend was opened and its 2.1.3 window verified through computer control after stopping the old helper. Computer control's own helper crashes on UI input, so live SMAppService re-registration and a second frontend reopen while the new live service is running remain pending. Saved device credentials and live configuration were not removed; firmware was not flashed.
+
+Outputs: `build/MacControl.app`, `build/MacControl-2.1.3.zip`, `build/tests-2.1.3.log`, `build/startup-smoke-2.1.3.log`, `build/ipc-smoke-2.1.3.log`, and `build/release-verification-2.1.3.json`.
+
 ## Completed checks
 
 - Swift package tests cover event envelopes/nulls, session sequence reset, UTF-8 size rejection, dispatch shape and permission gates, backoff, legacy boot identity, both hello contracts, preserved migration settings, private exact backups, changed-file protection, corrupt configuration preservation, oversized capability reports, extreme legacy numeric values, and crash recovery cooldown.

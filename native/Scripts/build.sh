@@ -7,5 +7,5 @@ xcodebuild -project "$native_root/MacControl.xcodeproj" -scheme MacControl -conf
 app_path="$native_root/build/ReleaseDerivedData/Build/Products/Release/MacControl.app"
 codesign --verify --deep --strict "$app_path"
 ditto "$app_path" "$native_root/build/MacControl.app"
-ditto -c -k --sequesterRsrc --keepParent "$native_root/build/MacControl.app" "$native_root/build/MacControl-2.1.1.zip"
+ditto -c -k --sequesterRsrc --keepParent "$native_root/build/MacControl.app" "$native_root/build/MacControl-2.1.3.zip"
 python3 "$native_root/Scripts/verify_bundle.py" "$native_root/build/MacControl.app"

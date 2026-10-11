@@ -105,17 +105,32 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
 
 @main enum ServiceMain {
     @MainActor static func main() {
-        let application = NSApplication.shared; application.setActivationPolicy(.prohibited)
+        // The helper shares the frontend's enclosing bundle. Creating an
+        // NSApplication registers that bundle as a running UI application and
+        // can make Launch Services reopen the helper instead of MacControl.
+        // XPC, workspace notifications and power callbacks need only the main
+        // CFRunLoop; the helper must never create an NSApplication.
         let system = NativeMacSystem()
         if CommandLine.arguments.contains("--probe") {
             Task {
                 let s = await system.sample(allowlist: [])
+                guard NSApp == nil else { fputs("Background helper registered a UI application.\n", stderr); exit(1) }
                 let summary: [String: JSONValue] = ["protocol_version": .number(2), "hardware_model": .string(s.hardwareModel), "boot_id": .string(EventFactory.bootID(seconds: s.bootTime)), "screen_lock_known": .bool(s.locked != nil), "telemetry": .object(s.heartbeat)]
                 print(String(data: try! JSONEncoder().encode(summary), encoding: .utf8)!)
                 exit(0)
             }
-            application.run(); return
+            CFRunLoopRun(); return
         }
+        let frontendRequirement: String
+        do {
+            let root = try NativeIdentity.currentExecutableURL().deletingLastPathComponent()
+            frontendRequirement = try NativeIdentity.requirement(for: root.appendingPathComponent("MacControl"), identifier: NativeIdentity.app)
+        } catch { fputs("Cannot validate frontend signature; agent not started.\n", stderr); exit(1) }
+        #if DEBUG
+        if CommandLine.arguments.contains("--startup-signature-check") {
+            print("STARTUP_SIGNATURE_VALIDATED"); return
+        }
+        #endif
         let config: AgentConfiguration
         var configurationError: String?
         do { config = try NativePaths.load() }
@@ -136,9 +151,7 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
         let listener = NSXPCListener(machServiceName: NativeIdentity.service)
         // Executable lives inside Contents/MacOS. App's signed identity must
         // match on every connection/message, enforced by Foundation/XPC.
-        let root = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
-        do { listener.setConnectionCodeSigningRequirement(try NativeIdentity.requirement(for: root.appendingPathComponent("MacControl"), identifier: NativeIdentity.app)) }
-        catch { fputs("Cannot validate frontend signature; agent not started.\n", stderr); exit(1) }
+        listener.setConnectionCodeSigningRequirement(frontendRequirement)
         listener.delegate = delegate; listener.resume()
         let power = PowerObserver()
         power.changed = { sleeping in
@@ -161,6 +174,6 @@ final class ListenerDelegate: NSObject, NSXPCListenerDelegate {
             else if await LegacyAgent.active() { await runtime.note("Python agent detected. Native session remains inactive until explicit cutover.") }
             else { await runtime.resumeOnLogin() }
         }
-        withExtendedLifetime((delegate, listener, power, termination)) { application.run() }
+        withExtendedLifetime((delegate, listener, power, termination)) { CFRunLoopRun() }
     }
 }

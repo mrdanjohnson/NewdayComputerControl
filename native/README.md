@@ -15,7 +15,7 @@ native/Scripts/build.sh
 Outputs:
 
 - `native/build/MacControl.app`
-- `native/build/MacControl-2.1.1.zip`
+- `native/build/MacControl-2.1.3.zip`
 - `native/build/release-build.log`
 
 The default build uses an ad-hoc signature and Hardened Runtime. It is a local development build. Developer ID signing and notarization are still needed for distribution to other users. Code-signing settings can be overridden as Xcode build arguments; distribution credentials are not included.
@@ -32,6 +32,10 @@ native/Scripts/distribute.sh
 ```
 
 The script rebuilds both architectures and embedded flashers with that identity, submits the ZIP for notarization, staples/validates the ticket, checks Gatekeeper acceptance, and recreates the client ZIP. It refuses Apple Development/ad hoc identities. Account credentials are read from your existing Keychain profile, never stored in this project. This distribution path has not been run because the required identity/profile are unavailable here. Retest install, Keychain access, service upgrade, and a spare-board flash using the final signed package.
+
+## Resume setup after the 2.1.1 background-service timeout
+
+Use 2.1.3 or later, installed in Applications, and quit older frontend copies. In Setup & pairing, click Register service to repair an enabled but unresponsive registration; approve the background item if macOS requests it. Select the board under Saved client setup and click Load credentials. Select Pair and start this Mac's agent, then click Finish network / pairing when available. This reuses the saved admin/API credentials and IP without flashing or rewriting USB credentials. Confirm Overview reports Connected. If no saved network IP is available, complete USB setup with flashing disabled.
 
 ## First installation
 

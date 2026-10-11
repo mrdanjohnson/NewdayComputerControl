@@ -314,8 +314,8 @@ cd ../agent && python3 -m venv .venv && .venv/bin/pip install -r requirements.tx
 - Never log secrets: the agent token and admin password are redacted by
   construction; AT-06 includes a token-leak check.
 
-## Native client deployment (MacControl 2.1.1)
+## Native client deployment (MacControl 2.1.3)
 
 The [native macOS app](native/README.md) now bundles USB flashing and setup for ESP32-S3 controllers with 8 MB or 16 MB flash (using the bundled 8 MB layout), including client Wi-Fi, controller admin password, READ/CONTROL/ADMIN keys, credential handoff, and optional pairing on the client Mac. Technician mode prepares a board without replacing your own Mac’s pairing or requiring the client's Wi-Fi to be present. Existing Python installations remain supported and unchanged. The firmware JSON setup extensions are additive.
 
-Build/package: `native/Scripts/build.sh`. Output: `native/build/MacControl-2.1.1.zip`. This is an ad hoc signed development package; Developer ID/notarization and a spare-board USB acceptance run are still needed before general client distribution. Firmware 1.6.1 is built locally, not flashed to the live board. See [verification](native/VERIFICATION.md).
+Build/package: `native/Scripts/build.sh`. Output: `native/build/MacControl-2.1.3.zip`. This is an ad hoc signed development package; Developer ID/notarization and a spare-board USB acceptance run are still needed before general client distribution. Firmware 1.6.1 is built locally, not flashed to the live board. See [verification](native/VERIFICATION.md).

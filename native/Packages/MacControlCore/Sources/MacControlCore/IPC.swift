@@ -1,9 +1,20 @@
 import Foundation
 import Security
+import Darwin
 
 public enum NativeIdentity {
     public static let app = "dev.maccontrol.native"
     public static let service = "dev.maccontrol.native.agent"
+    public static func currentExecutableURL() throws -> URL {
+        // SMAppService can supply a bundle-relative argv[0]. Ask the kernel
+        // for the running image instead of resolving argv against launchd's cwd.
+        var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        let count = path.withUnsafeMutableBytes {
+            proc_pidpath(getpid(), $0.baseAddress, UInt32($0.count))
+        }
+        guard count > 0 else { throw AgentFailure("Cannot locate the running executable") }
+        return URL(fileURLWithPath: String(cString: path)).resolvingSymlinksInPath()
+    }
     // Pin the exact peer code in local ad-hoc builds; Developer ID builds use
     // the bundle identifier + team certificate to survive signed upgrades.
     public static func requirement(for executable: URL, identifier: String) throws -> String {

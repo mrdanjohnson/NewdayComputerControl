@@ -86,11 +86,25 @@ import MacControlCore
         if endpoint.isEmpty { endpoint = value.configuration.hostname; port = String(value.configuration.port) }
     }
     func register() {
+        guard !busy, !provisioningActive else { return }
         busy = true; error = nil
-        do {
-            try service.register(); notice = "Background service registered. Approve it in System Settings if requested."
-        } catch { self.error = error.localizedDescription }
-        busy = false; Task { await refresh() }
+        Task {
+            defer { busy = false }
+            do {
+                if service.status == .enabled {
+                    do {
+                        setState(try await fetch())
+                        notice = "Background service is running."
+                        return
+                    } catch {
+                        try await service.unregister()
+                        connection?.invalidate(); connection = nil
+                    }
+                }
+                try service.register(); notice = "Background service registered. Approve it in System Settings if requested."
+            } catch { self.error = error.localizedDescription }
+            await refresh()
+        }
     }
     func unregister() {
         Task {
@@ -114,7 +128,13 @@ import MacControlCore
                     do { guard let bytes else { throw AgentFailure("Empty service response") }; once.finish(.success(try JSONDecoder().decode(AgentSnapshot.self, from: bytes))) }
                     catch { once.finish(.failure(error)) }
                 }
-                Task { try? await Task.sleep(nanoseconds: 45_000_000_000); once.finish(.failure(AgentFailure("Operation timed out. Check status before retrying migration."))) }
+                Task {
+                    try? await Task.sleep(nanoseconds: 45_000_000_000)
+                    let message = ["import", "cutover", "rollback"].contains(operation)
+                        ? "Operation timed out. Check status before retrying migration."
+                        : "The background service did not finish the request. Check Overview and the service registration before retrying."
+                    once.finish(.failure(AgentFailure(message)))
+                }
             }
             dirty = false; setState(result)
             notice = result.logs.last?.message ?? "Settings saved."

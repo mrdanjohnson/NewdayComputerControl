@@ -58,6 +58,11 @@ import MacControlCore
         task = Task {
             defer { busy = false; Self.operationIsRunning = false; task = nil; fraction = nil }
             do {
+                if shouldPair {
+                    status = "Checking this Mac's background service…"
+                    do { _ = try await agent.fetch() }
+                    catch { throw AgentFailure("The background service is not responding. Click Register service to repair its registration, then retry setup without flashing.") }
+                }
                 if shouldPair, await LegacyAgent.active() {
                     throw AgentFailure("The Python agent is active. Choose Prepare for another Mac, or use the existing Python migration workflow before pairing the native agent.")
                 }
@@ -135,6 +140,7 @@ import MacControlCore
             guard let raw = try TokenStore.read("provisioning." + selectedSavedID) else { throw AgentFailure("Saved credentials are unavailable in Keychain") }
             let record = try JSONDecoder().decode(PreparedEndpoint.self, from: Data(raw.utf8))
             remember(record); controllerAddress = record.hostname + ".local"; completed = false; pairThisMac = false; error = nil
+            flashFirmware = false
             status = "Saved client credentials loaded. Export them or open the Controller on the client’s network."
         } catch { self.error = "Could not load the selected client credentials from Keychain" }
     }
