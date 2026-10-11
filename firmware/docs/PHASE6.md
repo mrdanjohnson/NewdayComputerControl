@@ -187,3 +187,13 @@ gui/$(id -u)/com.maccontrol.agent` is the permanent last step (HANDOFF).
 > Still owed for the Milestone 2 gate: flash the S3 (user decision — the
 > LittleFS migration above), re-provision, then live-run AT-05 (updated
 > 20-code pin), AT-10, AT-12, and the AT-06…AT-09 + AT-11 regression sweep ×2.
+
+### 2026-10-08: native USB deployment setup amendment — built, not flashed
+
+User-authorized native setup adds two physical ADMIN console JSON commands:
+`wifi set-json {"ssid":"...","password":"..."}` and
+`admin set-json {"password":"..."}`. Legacy commands and HTTP/protocol-v2 contracts remain intact. Credential limits are SSID 1–32 bytes, Wi-Fi empty for an explicit open network or 8–63 bytes, admin 10–128 bytes; JSON must have exactly the applicable string keys and no control characters/embedded NUL. Parser payload is bounded at 490 bytes. Console lines are bounded at 512 bytes and overflow discards the entire command. Admin success emits the fixed existing auth event, never the password. Identity output is split by field to preserve the final device ID despite long description text.
+
+Native setup ships firmware 1.6.1-phase6 with four fixed-address images and verified official esptool 5.5.0. It captures/persists each API key before Wi-Fi association, reuses known active keys by ID/role, then writes Wi-Fi. It does not claim to fix the fresh-board task watchdog. Technician preparation supports later client network verification; automatic client pairing requires matching physical/network device identity and matching active agent instance. The partition-layout migration warning remains applicable.
+
+Host tests 158/158 pass and both S3/WROOM targets compile. The native suite passes 32 tests using synthetic credentials, pseudo-terminals and loopback servers. S3 dist images are updated locally. **No physical flash or live provisioning was performed.** Hardware wizard acceptance and distribution signing/notarization remain required.

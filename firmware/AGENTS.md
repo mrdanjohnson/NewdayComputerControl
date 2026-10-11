@@ -7,7 +7,7 @@ work. This file captures what changes day-to-day; keep it in sync.
 ## Commands
 
 ```bash
-./.venv/bin/pio test -e native                 # 156 host tests — run before EVERY flash
+./.venv/bin/pio test -e native                 # 158 host tests — run before EVERY flash
 ./.venv/bin/pio run -e esp32-s3-devkitc-1      # primary target (S3)
 ./.venv/bin/pio run -e esp32-wroom-32          # classic ESP32 (no USB HID)
 ./.venv/bin/pio run -e esp32-s3-devkitc-1 -t upload   # flash (uses UART port)
@@ -125,3 +125,7 @@ in `.venv` themselves. The Mac agent runs from `../agent` with its own venv
   note in `lib/maccontrol_core/mc_openapi.cpp`.
 - Status/progress → `docs/HANDOFF.md` top banner.
 - Any new failure mode → its own `docs/DEBUG-*.md`, linked from HANDOFF.
+
+## Native USB provisioning (2026-10-08)
+
+The native app bundles firmware 1.6.1-phase6 and adds bounded `wifi set-json` / `admin set-json` physical-console commands. These preserve credential spaces/quotes; legacy CLI and HTTP/v2 contracts are unchanged. Native setup captures each key in Keychain before Wi-Fi association and does not blindly retry an unknown key-create result. Dist images are built **not flashed**. Technician mode prepares for a client network that may be absent; only client-Mac mode verifies Wi-Fi and the active agent session. Keep source/build/hardware claims separate. See HANDOFF and `../native/README.md`.

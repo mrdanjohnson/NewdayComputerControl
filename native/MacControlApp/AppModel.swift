@@ -1,9 +1,13 @@
 import SwiftUI
 import ServiceManagement
 import Network
+import Combine
 import MacControlCore
 
 @MainActor final class AppModel: ObservableObject {
+    let deviceSetup = DeviceSetupModel()
+    @Published var provisioningActive = false
+    private var setupSubscription: AnyCancellable?
     @Published var state = AgentSnapshot()
     @Published var draft = AgentConfiguration()
     @Published var error: String?
@@ -18,6 +22,7 @@ import MacControlCore
     private let service = SMAppService.agent(plistName: "dev.maccontrol.native.agent.plist")
     private var refreshTask: Task<Void, Never>?
     init() {
+        setupSubscription = deviceSetup.$busy.sink { [weak self] value in self?.provisioningActive = value }
         refreshTask = Task { [weak self] in
             while !Task.isCancelled { await self?.refresh(); try? await Task.sleep(nanoseconds: 2_000_000_000) }
         }

@@ -1,0 +1,16 @@
+{
+  "tag": "v5.5.0",
+  "release": "https://github.com/espressif/esptool/releases/tag/v5.5.0",
+  "source": "https://codeload.github.com/espressif/esptool/tar.gz/refs/tags/v5.5.0",
+  "assets": {
+    "x86_64": {
+      "url": "https://github.com/espressif/esptool/releases/download/v5.5.0/esptool-v5.5.0-macos-amd64.tar.gz",
+      "sha256": "ed3f24d02c8380f6685f46ef9f9e135f80adb09f50055d8db16b578617bb5d9d"
+    },
+    "arm64": {
+      "url": "https://github.com/espressif/esptool/releases/download/v5.5.0/esptool-v5.5.0-macos-arm64.tar.gz",
+      "sha256": "8652bec3712d746b7df7e9a495270fffa0df3b1e7e99016fd69b88772d4d56d4"
+    }
+  },
+  "source_sha256": "3805fe89f13a88874c0fb4cb4ac1f22c5c55944c0541208bf1d5578dfd59f8d5"
+}

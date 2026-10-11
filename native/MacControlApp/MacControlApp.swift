@@ -2,6 +2,7 @@ import SwiftUI
 import MacControlCore
 
 @main struct MacControlApp: App {
+    @NSApplicationDelegateAdaptor(SetupAppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
     init() {
         #if DEBUG
@@ -33,10 +34,10 @@ struct AgentMenu: View {
             if let url = model.state.configuration.endpoint { openURL(url) }
         }.disabled(model.state.configuration.hostname.isEmpty || model.state.configuration.endpoint == nil)
         Divider()
-        Button("Start agent") { Task { await model.operate("start") } }.disabled(model.busy || model.state.phase == "connected" || model.serviceStatus != "Enabled")
-        Button("Stop agent") { Task { await model.operate("stop") } }.disabled(model.busy || model.serviceStatus != "Enabled")
+        Button("Start agent") { Task { await model.operate("start") } }.disabled(model.provisioningActive || model.busy || model.state.phase == "connected" || model.serviceStatus != "Enabled")
+        Button("Stop agent") { Task { await model.operate("stop") } }.disabled(model.provisioningActive || model.busy || model.serviceStatus != "Enabled")
         Divider()
-        Button("Quit frontend") { NSApp.terminate(nil) }
+        Button("Quit frontend") { NSApp.terminate(nil) }.disabled(model.provisioningActive)
     }
 }
 enum Page: String, CaseIterable, Identifiable {
@@ -57,7 +58,7 @@ struct MainView: View {
                 HStack { Image(systemName: "link.circle.fill").font(.title).foregroundStyle(.teal); VStack(alignment: .leading) { Text("MacControl").font(.headline); Text("Native Mac agent").font(.caption).foregroundStyle(.secondary) } }.padding([.top, .horizontal])
                 List(Page.allCases, selection: $page) { p in Label(p.rawValue, systemImage: p.symbol).tag(p) }
                 VStack(alignment: .leading, spacing: 5) { Label(model.state.phase.capitalized, systemImage: "circle.fill").foregroundStyle(model.state.phase == "connected" ? .green : .secondary); Text("Protocol v2 · \(EventFactory.version)").font(.caption).foregroundStyle(.secondary) }.padding()
-            }.navigationSplitViewColumnWidth(230)
+            }.navigationSplitViewColumnWidth(230).disabled(model.provisioningActive)
         } detail: {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 7) { Text((page ?? .overview).rawValue).font(.largeTitle.weight(.semibold)); Text((page ?? .overview).subtitle).foregroundStyle(.secondary) }.padding(28)
@@ -81,11 +82,11 @@ struct MainView: View {
         switch page ?? .overview {
         case .overview: overview
         case .setup: setup
-        case .apps: apps
-        case .commands: commands
-        case .connection: connection
+        case .apps: apps.disabled(model.provisioningActive)
+        case .commands: commands.disabled(model.provisioningActive)
+        case .connection: connection.disabled(model.provisioningActive)
         case .logs: logs
-        case .background: background
+        case .background: background.disabled(model.provisioningActive)
         }
     }
     private var overview: some View {
@@ -101,10 +102,10 @@ struct MainView: View {
                     row("Screen lock", model.state.screenLocked.map { $0 ? "Locked" : "Unlocked" } ?? "Unknown")
                     row("Latest action", model.state.lastAction ?? "None received")
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
-            }
+            }.disabled(model.provisioningActive)
             HStack {
-                Button("Start agent") { Task { await model.operate("start") } }.buttonStyle(.borderedProminent).disabled(model.busy || model.serviceStatus != "Enabled")
-                Button("Stop agent") { Task { await model.operate("stop") } }.disabled(model.busy || model.serviceStatus != "Enabled")
+                Button("Start agent") { Task { await model.operate("start") } }.buttonStyle(.borderedProminent).disabled(model.provisioningActive || model.busy || model.serviceStatus != "Enabled")
+                Button("Stop agent") { Task { await model.operate("stop") } }.disabled(model.provisioningActive || model.busy || model.serviceStatus != "Enabled")
                 Button("Set up this Mac") { page = .setup }
             }
             Text("Wake, lock and unlock remain on the ESP32's USB HID path. This agent performs only the actions you enable and reports observed Mac state.").font(.callout).foregroundStyle(.secondary)
@@ -113,22 +114,23 @@ struct MainView: View {
     private func row(_ label: String, _ value: String) -> some View { HStack(alignment: .top) { Text(label).foregroundStyle(.secondary).frame(width: 145, alignment: .leading); Text(value).textSelection(.enabled); Spacer() } }
     private var setup: some View {
         VStack(alignment: .leading, spacing: 22) {
-            GroupBox("1. Enable the background service") { VStack(alignment: .leading, spacing: 12) { Text(model.serviceStatus); HStack { Button("Register service") { model.register() }; Button("Open System Settings") { model.openLoginSettings() } } }.padding(12).frame(maxWidth: .infinity, alignment: .leading) }
-            GroupBox("2. Pair with the ESP32") {
+            GroupBox("1. Enable the background service") { VStack(alignment: .leading, spacing: 12) { Text(model.serviceStatus); HStack { Button("Register service") { model.register() }; Button("Open System Settings") { model.openLoginSettings() } } }.padding(12).frame(maxWidth: .infinity, alignment: .leading) }.disabled(model.provisioningActive)
+            DeviceSetupView(setup: model.deviceSetup, agent: model)
+            GroupBox("Pair an already configured ESP32") {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Open the pairing window in the ESP32 Web UI, then enter its eight-character code here.").foregroundStyle(.secondary)
                     HStack { TextField("Hostname or IP address", text: $model.endpoint); TextField("Port", text: $model.port).frame(width: 70) }
-                    HStack { SecureField("Pairing code", text: $model.code).frame(width: 200); Button("Pair") { model.pair() }.disabled(model.busy || model.serviceStatus != "Enabled") }
+                    HStack { SecureField("Pairing code", text: $model.code).frame(width: 200); Button("Pair") { model.pair() }.disabled(model.provisioningActive || model.busy || model.serviceStatus != "Enabled") }
                     HStack { Button("Discover endpoints") { discovery.start() }; Text(discovery.message).font(.caption).foregroundStyle(.secondary) }
                     ForEach(discovery.hosts, id: \.self) { host in Button(host) { model.endpoint = host } }
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
-            }
+            }.disabled(model.provisioningActive)
             GroupBox("Use an existing Python installation") {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Import agent.json to preserve pairing, allowed applications and command permissions. Import only stages the native settings; Python keeps running until you choose cutover.").foregroundStyle(.secondary)
-                    HStack { Button("Import Python settings…") { model.importPython() }.disabled(model.busy || model.serviceStatus != "Enabled"); Button("Take over from Python") { confirmation = "cutover" }.disabled(model.busy || model.state.configuration.legacyStatePath == nil); Button("Restore Python") { confirmation = "rollback" }.disabled(model.busy || model.state.configuration.legacyStatePath == nil) }
+                    HStack { Button("Import Python settings…") { model.importPython() }.disabled(model.provisioningActive || model.busy || model.serviceStatus != "Enabled"); Button("Take over from Python") { confirmation = "cutover" }.disabled(model.busy || model.state.configuration.legacyStatePath == nil); Button("Restore Python") { confirmation = "rollback" }.disabled(model.busy || model.state.configuration.legacyStatePath == nil) }
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
-            }
+            }.disabled(model.provisioningActive)
         }
     }
     private var apps: some View {

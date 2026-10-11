@@ -11,6 +11,12 @@
       "path" = "MacControlApp/AppModel.swift";
       "sourceTree" = "SOURCE_ROOT";
     };
+    "B0D927C7C426A96AFABFE094" = {
+      "isa" = "PBXFileReference";
+      "lastKnownFileType" = "sourcecode.swift";
+      "path" = "MacControlApp/DeviceSetup.swift";
+      "sourceTree" = "SOURCE_ROOT";
+    };
     "7F86706677FE6E38CD09DA7D" = {
       "isa" = "PBXFileReference";
       "lastKnownFileType" = "sourcecode.swift";
@@ -51,6 +57,12 @@
       "isa" = "PBXFileReference";
       "lastKnownFileType" = "text.plist.xml";
       "path" = "Resources/Agent.entitlements";
+      "sourceTree" = "SOURCE_ROOT";
+    };
+    "68C40C077455F7A6E9DAD58A" = {
+      "isa" = "PBXFileReference";
+      "lastKnownFileType" = "text.plist.xml";
+      "path" = "Resources/FlashTool.entitlements";
       "sourceTree" = "SOURCE_ROOT";
     };
     "FD7386993452CC667350B4BB" = {
@@ -97,6 +109,7 @@
         "SDKROOT" = "macosx";
         "SUPPORTED_PLATFORMS" = "macosx";
         "ONLY_ACTIVE_ARCH" = "YES";
+        "ENABLE_USER_SCRIPT_SANDBOXING" = "NO";
         "PRODUCT_NAME" = "MacControlAgentService";
         "PRODUCT_BUNDLE_IDENTIFIER" = "dev.maccontrol.native.agent";
         "CODE_SIGN_ENTITLEMENTS" = "Resources/Agent.entitlements";
@@ -121,6 +134,7 @@
         "SDKROOT" = "macosx";
         "SUPPORTED_PLATFORMS" = "macosx";
         "ONLY_ACTIVE_ARCH" = "YES";
+        "ENABLE_USER_SCRIPT_SANDBOXING" = "NO";
         "PRODUCT_NAME" = "MacControlAgentService";
         "PRODUCT_BUNDLE_IDENTIFIER" = "dev.maccontrol.native.agent";
         "CODE_SIGN_ENTITLEMENTS" = "Resources/Agent.entitlements";
@@ -186,6 +200,17 @@
       "files" = ("8A9BE751C24D1EC5F332E527");
       "runOnlyForDeploymentPostprocessing" = 0;
     };
+    "DCFD8A65B58C1649C8D01237" = {
+      "isa" = "PBXShellScriptBuildPhase";
+      "buildActionMask" = 2147483647;
+      "files" = ();
+      "inputPaths" = ();
+      "outputPaths" = ("$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Firmware/manifest.json");
+      "runOnlyForDeploymentPostprocessing" = 0;
+      "shellPath" = "/bin/sh";
+      "shellScript" = "set -e\n/usr/bin/python3 \"$SRCROOT/Scripts/fetch_esptool.py\"\n/usr/bin/python3 \"$SRCROOT/Scripts/prepare_resources.py\"\n";
+      "alwaysOutOfDate" = 1;
+    };
     "8B63A0393819EF9DE7F2B473" = {
       "isa" = "XCBuildConfiguration";
       "buildSettings" = {
@@ -199,6 +224,7 @@
         "SDKROOT" = "macosx";
         "SUPPORTED_PLATFORMS" = "macosx";
         "ONLY_ACTIVE_ARCH" = "YES";
+        "ENABLE_USER_SCRIPT_SANDBOXING" = "NO";
         "PRODUCT_NAME" = "MacControl";
         "PRODUCT_BUNDLE_IDENTIFIER" = "dev.maccontrol.native";
         "INFOPLIST_FILE" = "Resources/Info.plist";
@@ -223,6 +249,7 @@
         "SDKROOT" = "macosx";
         "SUPPORTED_PLATFORMS" = "macosx";
         "ONLY_ACTIVE_ARCH" = "YES";
+        "ENABLE_USER_SCRIPT_SANDBOXING" = "NO";
         "PRODUCT_NAME" = "MacControl";
         "PRODUCT_BUNDLE_IDENTIFIER" = "dev.maccontrol.native";
         "INFOPLIST_FILE" = "Resources/Info.plist";
@@ -243,6 +270,10 @@
       "isa" = "PBXBuildFile";
       "fileRef" = "39C4F5628B04C9CE96817B82";
     };
+    "972FCDB47E12BF00E961C900" = {
+      "isa" = "PBXBuildFile";
+      "fileRef" = "B0D927C7C426A96AFABFE094";
+    };
     "D0B9DE65CDF7333BD9D3CC57" = {
       "isa" = "PBXBuildFile";
       "fileRef" = "7F86706677FE6E38CD09DA7D";
@@ -250,7 +281,7 @@
     "2D764CD838DB39F040AA7EC4" = {
       "isa" = "PBXSourcesBuildPhase";
       "buildActionMask" = 2147483647;
-      "files" = ("A2761FCC91BC1FADF14C0B5C", "D0B9DE65CDF7333BD9D3CC57");
+      "files" = ("A2761FCC91BC1FADF14C0B5C", "972FCDB47E12BF00E961C900", "D0B9DE65CDF7333BD9D3CC57");
       "runOnlyForDeploymentPostprocessing" = 0;
     };
     "330E01005A638FE41F25C949" = {
@@ -295,7 +326,7 @@
     "7D1043473D55BFA90E8530D3" = {
       "isa" = "PBXNativeTarget";
       "buildConfigurationList" = "3667E0A0C8FB580B1D21C114";
-      "buildPhases" = ("2D764CD838DB39F040AA7EC4", "624D0503EC8FAD9DEB266B14", "06F5DC629BD46AAFD46564D1", "6E398B1B591B64AF4F0654C7", "E9DC814FFE71BB8167507B82");
+      "buildPhases" = ("DCFD8A65B58C1649C8D01237", "2D764CD838DB39F040AA7EC4", "624D0503EC8FAD9DEB266B14", "06F5DC629BD46AAFD46564D1", "6E398B1B591B64AF4F0654C7", "E9DC814FFE71BB8167507B82");
       "buildRules" = ();
       "dependencies" = ("5359EB3E03994EAF3E82669D");
       "name" = "MacControl";
@@ -312,7 +343,7 @@
     };
     "E50290A24C49A459B43487C5" = {
       "isa" = "PBXGroup";
-      "children" = ("39C4F5628B04C9CE96817B82", "7F86706677FE6E38CD09DA7D", "F14E4E23569B7480046FD4FB", "CD24EF5AD4150BA175B9A888", "EB8F82449F9094BF50B869D4", "429D0230C59596BAEA6CC819", "64A02785DE475B2C650BA2BE", "D52EF76069BA3B65870F6F9A", "FBDC4F23F93125BBEEAE800C");
+      "children" = ("39C4F5628B04C9CE96817B82", "B0D927C7C426A96AFABFE094", "7F86706677FE6E38CD09DA7D", "F14E4E23569B7480046FD4FB", "CD24EF5AD4150BA175B9A888", "EB8F82449F9094BF50B869D4", "429D0230C59596BAEA6CC819", "64A02785DE475B2C650BA2BE", "D52EF76069BA3B65870F6F9A", "68C40C077455F7A6E9DAD58A", "FBDC4F23F93125BBEEAE800C");
       "sourceTree" = "<group>";
     };
     "9E232BE73FECBBF8659C79E7" = {

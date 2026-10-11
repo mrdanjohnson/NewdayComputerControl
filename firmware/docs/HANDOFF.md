@@ -4,6 +4,17 @@ Read this first in a new session, then `firmware/AGENTS.md`, then the
 phase doc for the work at hand. Project root:
 `/Users/danieljohnson/Public/ESP32-MCA Command Loop Design/`
 
+## Native USB setup update — 2026-10-08
+
+Firmware **1.6.1-phase6 is built, not flashed**. `dist/esp32-s3/` now contains this build and no longer denotes the last bench-flashed image. The existing bench state below remains historical hardware evidence for 1.6.0.
+
+- Native MacControl 2.1.0 bundles S3 8 MB firmware and checksum-pinned official standalone esptool for Intel/Apple silicon. The frontend flashes/provisions via COM; the agent session remains in its supervised service. Python tooling is unchanged.
+- Additive physical ADMIN console commands `wifi set-json {"ssid":"...","password":"..."}` and `admin set-json {"password":"..."}` preserve spaces/quotes/UTF-8. Exact-key JSON parser bounds credentials and rejects control characters. Console input is bounded at 512 bytes; overflow discards the whole command. Legacy CLI remains supported; HTTP/agent-v2 contracts are unchanged.
+- `identity show` emits each field separately so a long description cannot truncate device ID. Admin-password update emits the existing fixed auth log event without secrets.
+- Native preparation creates and captures keys **before** starting Wi-Fi, persists each result in Keychain, and does not automatically replay key creation after an unknown reply. The existing fresh-board TWDT root cause remains unresolved. Technician mode does not wait for the client's unavailable Wi-Fi; client-Mac mode verifies physical/network identity and the active paired session.
+- Verification: **158/158 firmware host tests**, both device targets compile; **32 Swift tests**, unchanged event parser admits 19 captured frames, isolated XPC checks pass. Physical flashing/provisioning and complete visual UI acceptance remain pending. No live controller serial connection or production service cutover occurred.
+- Client deployment package still needs Developer ID signing/notarization. See `../../native/README.md` and `../../native/VERIFICATION.md` for workflow and release gates.
+
 ## Current state & next steps (2026-10-03)
 
 > **State:** Phase 6 firmware is **flashed, re-provisioned, and OTA-smoked on

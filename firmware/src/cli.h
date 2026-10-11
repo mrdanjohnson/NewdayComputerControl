@@ -28,4 +28,5 @@ private:
 
     AppContext* ctx_ = nullptr;
     std::string line_buf_;
+    bool line_overflow_ = false;
 };

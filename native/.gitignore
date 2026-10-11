@@ -3,3 +3,5 @@ Packages/*/.build/
 *.xcuserstate
 xcuserdata/
 .DS_Store
+Vendor/ESPTools/
+__pycache__/

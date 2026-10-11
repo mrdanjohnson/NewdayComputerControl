@@ -1,6 +1,9 @@
 #include "mc_openapi.h"
 
 namespace mcco {
+// 2026-10-08 provisioning amendment: physical console adds bounded wifi/admin
+// set-json commands. Existing CLI and protocol-v2 controller/agent APIs remain.
+
 
 const char kOpenApiJson[] = R"json({
   "openapi": "3.1.0",

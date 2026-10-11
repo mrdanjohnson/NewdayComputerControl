@@ -92,7 +92,7 @@ public struct Event: Codable, Sendable {
     }
 }
 public struct EventFactory: Sendable {
-    public static let version = "2.0.0-native"
+    public static let version = "2.1.1-native"
     public var instanceID: String
     public private(set) var sessionID: String?
     public private(set) var sequence = 0

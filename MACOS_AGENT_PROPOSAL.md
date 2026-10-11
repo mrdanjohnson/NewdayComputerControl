@@ -96,7 +96,7 @@ Use a compact menu-bar status item and a normal settings window. A [SwiftUI Menu
 | Diagnostics | Redacted bounded logs, permission/setup failures, differentiated DNS/TCP/upgrade/hello errors, and a user-initiated diagnostic export. |
 | Background operation | Show registration/approval state, start/stop agent, and login behavior. Explain the distinction between closing the window and stopping the agent. |
 
-Keep firmware flashing, serial Wi-Fi provisioning, ESP32 API-key management, macros, and device-side unlock-password management in their existing tools for the first release. They are different responsibilities from the Mac agent frontend.
+The original first-release scope left flashing and provisioning in the existing tools. On October 8 the user explicitly added native client deployment as a core feature. Native 2.1.0 now includes fixed-profile USB flashing, Wi-Fi/admin provisioning, API-key capture/export, and optional automatic pairing. Macros and device-side unlock-password management remain in the Controller Web UI. See `native/README.md` for the implemented workflow; physical wizard acceptance and Developer ID/notarization remain release gates.
 
 ## Native runtime
 

@@ -1,4 +1,5 @@
 #include "cli.h"
+#include "mc_provision.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_mac.h>
@@ -120,11 +121,14 @@ void Cli::poll() {
 void Cli::handleChar(char c) {
     if (c == '\r') return;
     if (c == '\n') {
+        if (line_overflow_) { line_buf_.clear(); line_overflow_ = false; console_println("input too long; command discarded"); return; }
         std::string line = line_buf_;
         line_buf_.clear();
         if (!line.empty()) handleLine(line);
-    } else if (line_buf_.size() < 200) {
+    } else if (line_buf_.size() < 512) {
         line_buf_ += c;
+    } else {
+        line_overflow_ = true;
     }
 }
 
@@ -148,9 +152,11 @@ void Cli::cmdHelp() {
         "  key list\n"
         "  key revoke <key_id>\n"
         "  wifi set <ssid> <pass>\n"
+        "  wifi set-json {\"ssid\":\"...\",\"password\":\"...\"}\n"
         "  wifi status\n"
         "  ntp set <server>\n"
         "  admin set <password>   (min 10 chars; never echoed to the log)\n"
+        "  admin set-json {\"password\":\"...\"}\n"
         "  admin status\n"
         "  agent pair [seconds]   (open the pairing window, 60-600, default 120)\n"
         "  agent status\n"
@@ -159,7 +165,28 @@ void Cli::cmdHelp() {
 }
 
 void Cli::handleLine(const std::string& line) {
+    const bool wifi_json = line.compare(0, 14, "wifi set-json ") == 0;
+    const bool admin_json = line.compare(0, 15, "admin set-json ") == 0;
+    if (wifi_json || admin_json) {
+        mcco::ProvisionCredentials credentials;
+        if (!mcco::parse_provision_credentials(line.substr(wifi_json ? 14 : 15), wifi_json, credentials)) {
+            console_println("invalid provisioning JSON or credential length"); return;
+        }
+        if (wifi_json) {
+            if (!ctx_->config->saveWifi(credentials.ssid, credentials.password)) { console_println("persist failed"); return; }
+            ctx_->wifi->setCredentials(credentials.ssid, credentials.password);
+            console_println("wifi credentials saved; reconnecting");
+        } else {
+            std::string error;
+            if (!ctx_->web_ui->setPassword(credentials.password.c_str(), error)) { console_println("admin password NOT set"); return; }
+            ctx_->log->write(mcco::LogCategory::Auth, mcco::LogLevel::Info, "admin_password_set",
+                             nullptr, nullptr, nullptr, nullptr);
+            console_println("admin password set");
+        }
+        return;
+    }
     std::vector<std::string> args = split(line);
+    if (args.empty()) return;
     const std::string cmd = args[0]; // copy: erase() below would invalidate a reference
     args.erase(args.begin());
 
@@ -193,9 +220,12 @@ void Cli::cmdIdentity(const std::vector<std::string>& args) {
     }
     if (args[0] == "show") {
         const mcco::Identity& id = ctx_->config->identity();
-        console_printf("device_name: %s\nhostname: %s\nlocation: %s\ndescription: %s\ndevice_id: %s\n",
-                      id.device_name.c_str(), id.hostname.c_str(), id.location.c_str(),
-                      id.description.c_str(), id.device_id.c_str());
+        // Print separately so a long description cannot truncate the final ID.
+        console_printf("device_name: %s\n", id.device_name.c_str());
+        console_printf("hostname: %s\n", id.hostname.c_str());
+        console_printf("location: %s\n", id.location.c_str());
+        console_printf("description: %s\n", id.description.c_str());
+        console_printf("device_id: %s\n", id.device_id.c_str());
         return;
     }
     if (args[0] == "set" && args.size() >= 3) {
