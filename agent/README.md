@@ -170,19 +170,25 @@ Run from the `agent` directory as the user who installed it, without `sudo`:
 ./uninstall.sh
 ```
 
-The uninstaller unloads `com.maccontrol.agent`, deletes
+The uninstaller disables and unloads `com.maccontrol.agent`, deletes
 `~/Library/LaunchAgents/com.maccontrol.agent.plist` so it does not start at
 login, and stops your Python processes running `-m maccontrol_agent`, including
 manually launched agents. It allows five seconds for termination before
 force-stopping remaining agents, and verifies that the service and agents are
-gone. It is safe to run again. `./install.sh --uninstall` runs the same script.
+gone. It preserves the plist until unload is confirmed, tries label/path and
+legacy removal methods, and waits for launchd to finish removing the service.
+If removal fails, it reports launchctl's errors and exits with a failure status.
+It can retry even if an earlier version already deleted the plist. It is safe
+to run again. `./install.sh --uninstall` runs the same script.
 
 Source files, `agent/.venv`, `~/.maccontrol/agent.json` (including the pairing
 token), logs, and `~/.maccontrol/endpoint.keys` are kept. The native MacControl
 service and endpoint pairing are unaffected. If switching to the native app,
 complete [Import Python settings and Take over from Python](../native/README.md#replace-an-existing-python-installation)
 first: uninstall removes the legacy plist required for takeover and Restore
-Python. Reinstalling the Python service restores its plist.
+Python. Reinstalling the Python service restores its plist and clears the
+persistent disabled override. If installing manually instead, first run
+`launchctl enable "gui/$UID/com.maccontrol.agent"` before loading the plist.
 
 Uninstall also keeps any scheduled power-on event. Check `pmset -g sched`;
 if you want to remove all repeating power events, run `sudo pmset repeat cancel`.

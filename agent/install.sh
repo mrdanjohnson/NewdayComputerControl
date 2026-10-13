@@ -629,6 +629,10 @@ log "Wrote $PLIST_DEST"
 
 # --- load / reload -----------------------------------------------------------
 
+# uninstall.sh persists a disabled override across logins. Explicitly clear it
+# on reinstall, including --no-start, so a later bootstrap can load the service.
+launchctl enable "gui/$UID/$PLIST_LABEL"
+
 if [[ "$NO_START" -eq 1 ]]; then
     log "Configured (--no-start). Load it later with:"
     log "  launchctl bootstrap gui/\$UID \"$PLIST_DEST\""

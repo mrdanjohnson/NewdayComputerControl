@@ -12,7 +12,7 @@ usage() {
 Usage: ./uninstall.sh [--dry-run]
 
 Run as the user who installed the Python agent (without sudo).
-Unloads the Python LaunchAgent, removes its startup plist, and stops this
+Disables and unloads the Python LaunchAgent, removes its startup plist, and stops this
 user's Python processes running -m maccontrol_agent, including manual runs.
 Processes get SIGTERM, then SIGKILL if still running after five seconds.
 
@@ -70,17 +70,44 @@ echo "Startup plist: $PLIST"
 if [[ "$DRY_RUN" -eq 1 ]]; then
     pids="$(agent_pids)"
     printf 'Would stop Python agent PIDs: %s\n' "${pids:-none}"
+    echo "Would disable the Python startup service and unload it before removing its plist."
     echo "Dry run: no changes made."
     exit 0
 fi
 
-# Unload before signaling processes so KeepAlive cannot restart them. Removing
-# the installed plist prevents launchd from loading it at the next login.
-launchctl bootout "$SERVICE" 2>/dev/null \
-    || launchctl unload "$PLIST" 2>/dev/null || true
-rm -f "$PLIST"
-if launchctl print "$SERVICE" >/dev/null 2>&1; then
-    echo "The Python service is still registered; could not unload it." >&2
+# Preserve errors for diagnosis instead of discarding launchctl's explanation.
+# Do not remove the plist until unload succeeds: it is needed by the path-based
+# fallbacks. Label-based removal still works if an earlier attempt removed it.
+LAUNCHCTL_ERRORS=""
+try_launchctl() {
+    local output
+    if output="$(launchctl "$@" 2>&1)"; then return 0; fi
+    LAUNCHCTL_ERRORS="${LAUNCHCTL_ERRORS}launchctl $*: ${output:-failed without output}
+"
+    return 1
+}
+service_registered() { launchctl print "$SERVICE" >/dev/null 2>&1; }
+
+disabled=0
+if try_launchctl disable "$SERVICE"; then
+    disabled=1
+    echo "Disabled Python startup service."
+fi
+if service_registered; then
+    try_launchctl bootout "$SERVICE" || true
+    if service_registered && [[ -f "$PLIST" ]]; then
+        try_launchctl bootout "gui/$UID" "$PLIST" || true
+        if service_registered; then try_launchctl unload -w "$PLIST" || true; fi
+    fi
+    if service_registered; then try_launchctl remove "$LABEL" || true; fi
+fi
+
+# A service may still be visible while its process is terminating. If disabled,
+# stop matching Python agents below and allow launchd time to finish removal.
+# If both disabling and unloading failed, signaling KeepAlive could respawn it.
+if service_registered && [[ "$disabled" -eq 0 ]]; then
+    echo "Could not disable or unload the Python service; kept any startup plist for retry." >&2
+    printf '%s' "$LAUNCHCTL_ERRORS" >&2
     exit 1
 fi
 
@@ -110,7 +137,35 @@ fi
 remaining="$(agent_pids)"
 if [[ -n "$remaining" ]]; then
     printf 'Could not stop Python agent PIDs: %s\n' "$remaining" >&2
+    printf '%s' "$LAUNCHCTL_ERRORS" >&2
+    echo "Kept any startup plist for retry." >&2
     exit 1
 fi
+for attempt in 1 2 3 4 5; do
+    service_registered || break
+    sleep 1
+done
+if service_registered; then
+    # Retry by label after the running process has exited.
+    try_launchctl bootout "$SERVICE" || true
+    for attempt in 1 2 3 4 5; do
+        service_registered || break
+        sleep 1
+    done
+fi
+if service_registered; then
+    echo "Python agents stopped, but launchd still has the service registered; uninstall is incomplete." >&2
+    echo "Kept any startup plist for retry. Startup disabling succeeded: $disabled" >&2
+    printf '%s' "$LAUNCHCTL_ERRORS" >&2
+    echo "Diagnostic command: launchctl print $SERVICE" >&2
+    exit 1
+fi
+remaining="$(agent_pids)"
+if [[ -n "$remaining" ]]; then
+    printf 'Python agent processes appeared again during unload: %s\n' "$remaining" >&2
+    echo "Kept any startup plist for retry." >&2
+    exit 1
+fi
+rm -f "$PLIST"
 echo "Python agent uninstalled: service unloaded, startup plist removed, no matching agents running."
 echo "Kept source, .venv, ~/.maccontrol, endpoint credentials/pairing, and power schedules."
