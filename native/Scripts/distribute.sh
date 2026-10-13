@@ -11,7 +11,7 @@ if [[ "$MACCONTROL_DEVELOPER_ID" != 'Developer ID Application:'* ]]; then
 fi
 "$native_root/Scripts/build.sh" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$MACCONTROL_DEVELOPER_ID" DEVELOPMENT_TEAM="$MACCONTROL_TEAM_ID"
 app_path="$native_root/build/MacControl.app"
-archive_path="$native_root/build/MacControl-2.1.3.zip"
+archive_path="$native_root/build/MacControl-2.1.5.zip"
 xcrun notarytool submit "$archive_path" --keychain-profile "$MACCONTROL_NOTARY_PROFILE" --wait
 xcrun stapler staple "$app_path"
 xcrun stapler validate "$app_path"

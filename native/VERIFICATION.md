@@ -31,6 +31,26 @@ Universal Release and Debug builds, all **33 Swift tests**, bundle/signature/too
 
 Outputs: `build/MacControl.app`, `build/MacControl-2.1.3.zip`, `build/tests-2.1.3.log`, `build/startup-smoke-2.1.3.log`, `build/ipc-smoke-2.1.3.log`, and `build/release-verification-2.1.3.json`.
 
+## Signed service and live S3 pairing — October 11, 2026
+
+MacControl **2.1.4 (build 6)** is installed in `/Applications/MacControl.app`. The frontend, helper and packaged tools are signed with this Mac's existing Apple Development certificate. Previous ad hoc builds left SMAppService enforcing obsolete helper code hashes; the launchd and crash reports showed `Launch Constraint Violation`, followed by an unresolved relative BundleProgram and exit 78. After opening the installed signed app and repairing registration, launchd's constraint uses the helper's signing identifier, development validation category and team identity. The helper is running and XPC responds.
+
+The native configuration initially had no ESP32 address. The saved USB provisioning record for device `44b176cee02c` remained in Keychain. The new support command resumed the existing network-only setup. The user completed Keychain and Local Network dialogs; the first helper pairing request was blocked before Local Network approval (`Local network prohibited`, URL error -1009). Retrying after approval successfully saved native pairing, started the WebSocket agent and verified the same agent instance in the controller's active session report. The frontend reports **Connected**, and the service status confirms a transmitted heartbeat. No firmware or USB credentials were rewritten. One Applications frontend and one helper remain running.
+
+Support commands reuse AppModel and DeviceSetupModel for service status, registration repair and network-only recovery of a selected saved device. Output contains only status fields, not passwords, keys or tokens. XPC proxy failures now complete requests promptly with a service-unavailable message. The build script accepts `MACCONTROL_SIGNING_IDENTITY` or the ignored local identity file; this Mac is configured to retain the same certificate across local rebuilds. Bundle verification checks that frontend and helper use the same signing team.
+
+Verification: universal certificate-signed Release build and package checks pass; all **33 core tests** pass. The live signed service rejects the untrusted IPC probe. Copying the final build into Applications while the paired service runs preserves the connected status and observed heartbeat. Outputs include `build/MacControl-2.1.4.zip`, `build/tests-2.1.4.log`, `build/release-verification-2.1.4.json`, and `build/live-status-2.1.4.json`. This is a local development package; it is not Developer ID signed or notarized for general distribution. Full hardware command acceptance remains separate.
+
+## Setup progress and recovery screen — October 11, 2026
+
+MacControl **2.1.5 (build 7)** is installed in `/Applications/MacControl.app`. Setup & pairing now separates new USB setup, saved setup recovery and configured-controller pairing. Its progress diagram marks verified milestones, identifies the current or failed step, and provides the next action. Upload progress comes from the flasher; network and pairing operations show their stage without inventing a percentage. Background service and Python migration controls are collapsed until needed.
+
+Saved setup recovery preserves the chosen destination, disables flashing, and resumes the existing pairing when the loaded endpoint matches this Mac. A selected but unloaded saved device cannot inherit another device's progress. Saved keys alone do not count as a verified network connection. Technician preparation has its own handoff sequence and never claims this Mac is paired.
+
+Verification: all **39 Swift tests pass**, including six journey-state cases and a serial fixture proving the network step starts after all three keys have been saved. Universal certificate-signed Release build, matching signing teams, package signatures, firmware digests and bundled flasher execution pass. Updating the installed bundle invalidated the old running helper's dynamic signature check; repairing registration restarted the signed 2.1.5 helper. It automatically resumed the saved pairing and reports Connected with an observed heartbeat. No firmware, USB credentials or pairing were rewritten. Computer control opened the new frontend, but its native helper crashed while navigating/reading Setup & pairing; visual layout verification is pending.
+
+Outputs: `build/MacControl-2.1.5.zip`, `build/build-2.1.5.log`, `build/tests-2.1.5.log`, `build/release-verification-2.1.5.json`, and `build/live-status-2.1.5.json`. This remains an Apple Development-signed local package.
+
 ## Completed checks
 
 - Swift package tests cover event envelopes/nulls, session sequence reset, UTF-8 size rejection, dispatch shape and permission gates, backoff, legacy boot identity, both hello contracts, preserved migration settings, private exact backups, changed-file protection, corrupt configuration preservation, oversized capability reports, extreme legacy numeric values, and crash recovery cooldown.

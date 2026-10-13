@@ -191,11 +191,14 @@ public struct SerialProvisioner: Sendable {
                 }, save: @escaping Save = { try TokenStore.write(String(decoding: JSONEncoder().encode($0), as: UTF8.self), id: $0.credentialAccount) }) {
         self.console = console; self.load = load; self.save = save
     }
-    public func run(credentials: SetupCredentials, firmwareVersion: String, waitForWiFi: Bool = true, progress: @escaping Progress) async throws -> PreparedEndpoint {
-        do { let result = try await setup(credentials, firmwareVersion, waitForWiFi, progress); await console.close(); return result }
+    public func run(credentials: SetupCredentials, firmwareVersion: String, waitForWiFi: Bool = true,
+                    step: @escaping @Sendable (SetupStep) async -> Void = { _ in }, progress: @escaping Progress) async throws -> PreparedEndpoint {
+        do { let result = try await setup(credentials, firmwareVersion, waitForWiFi, step, progress); await console.close(); return result }
         catch { await console.close(); throw error }
     }
-    private func setup(_ credentials: SetupCredentials, _ version: String, _ waitForWiFi: Bool, _ progress: Progress) async throws -> PreparedEndpoint {
+    private func setup(_ credentials: SetupCredentials, _ version: String, _ waitForWiFi: Bool,
+                       _ step: @Sendable (SetupStep) async -> Void, _ progress: Progress) async throws -> PreparedEndpoint {
+        await step(.usb)
         try credentials.validate(); try await console.ready()
         let help = try await console.command("help", endings: ["agent pair"], timeout: 10)
         guard help.contains("wifi set-json"), help.contains("admin set-json") else { throw AgentFailure("This firmware lacks the native setup commands. Select Flash firmware and retry.") }
@@ -220,7 +223,8 @@ public struct SerialProvisioner: Sendable {
             if response.contains("key store full") { throw AgentFailure("The device key store is full. Revoke unused keys in the Controller, then retry without flashing.") }
             record.keys[role] = try ProvisionParser.key(response); try await save(record)
         }
-        await progress("Saving Wi-Fi and waiting for the device to connect…")
+        await step(.network)
+        await progress(waitForWiFi ? "Saving Wi-Fi and waiting for the device to connect…" : "Saving Wi-Fi for the client's network…")
         let wifi = try await console.command(credentials.command(wifi: true), endings: ["wifi credentials saved", "persist failed", "invalid provisioning", "unknown command"], timeout: 20)
         guard wifi.contains("wifi credentials saved") else { throw AgentFailure("Wi-Fi credentials were not saved") }
         if !waitForWiFi {

@@ -22,6 +22,10 @@ import MacControlCore
     @Published var controllerAddress = ""
     @Published var savedDeviceIDs = UserDefaults.standard.stringArray(forKey: "MacControlPreparedDeviceIDs") ?? []
     @Published var selectedSavedID = ""
+    @Published var step: SetupStep?
+    @Published var networkVerified = false
+    @Published var pairingSaved = false
+    @Published var paused = false
     private var task: Task<Void, Never>?
     let firmwareVersion: String = {
         guard let directory = Bundle.main.resourceURL?.appendingPathComponent("Firmware/manifest.json"),
@@ -33,6 +37,10 @@ import MacControlCore
         return try FirmwareBundle(directory: resources.appendingPathComponent("Firmware"))
     }
     func refreshPorts() { ports = SerialPorts.available(); if !ports.contains(port) { port = ports.count == 1 ? ports[0] : "" } }
+    func matchesEndpoint(_ hostname: String) -> Bool {
+        guard let record = prepared, !hostname.isEmpty else { return false }
+        return [record.hostname + ".local", record.ip].contains(hostname)
+    }
     func validate(agent: AppModel, networkOnly: Bool = false) throws {
         guard !busy, !agent.busy, !Self.operationIsRunning else { throw AgentFailure("Another setup operation is in progress") }
         if !networkOnly {
@@ -47,12 +55,14 @@ import MacControlCore
         }
         if pairThisMac {
             guard agent.serviceStatus == "Enabled" else { throw AgentFailure("Register and approve the background service before pairing this Mac, or choose Prepare for another Mac") }
-            guard agent.state.configuration.hostname.isEmpty || replacePairing else { throw AgentFailure("This Mac already has an endpoint. Choose Prepare for another Mac or explicitly allow replacing this Mac's pairing.") }
+            guard agent.state.configuration.hostname.isEmpty || replacePairing || (networkOnly && matchesEndpoint(agent.state.configuration.hostname)) else { throw AgentFailure("This Mac already has an endpoint. Choose Prepare for another Mac or explicitly allow replacing this Mac's pairing.") }
         }
     }
     func begin(agent: AppModel, networkOnly: Bool = false) {
         do { try validate(agent: agent, networkOnly: networkOnly) } catch { self.error = error.localizedDescription; return }
         busy = true; Self.operationIsRunning = true; error = nil; completed = false; fraction = nil
+        paused = false; networkVerified = false; pairingSaved = false
+        step = pairThisMac ? .mac : .usb
         let credentials = SetupCredentials(ssid: ssid, wifiPassword: openNetwork ? "" : wifiPassword, adminPassword: adminPassword)
         let selectedPort = port, shouldFlash = flashFirmware, shouldPair = pairThisMac
         task = Task {
@@ -67,6 +77,7 @@ import MacControlCore
                     throw AgentFailure("The Python agent is active. Choose Prepare for another Mac, or use the existing Python migration workflow before pairing the native agent.")
                 }
                 if !networkOnly {
+                    step = .usb
                     prepared = nil; controllerAddress = ""
                     let package = try firmware()
                     if shouldFlash {
@@ -81,7 +92,8 @@ import MacControlCore
                     let result = try await SerialProvisioner(console: console, save: { [self] record in
                         try TokenStore.write(String(decoding: JSONEncoder().encode(record), as: UTF8.self), id: record.credentialAccount)
                         await self.remember(record)
-                    }).run(credentials: credentials, firmwareVersion: package.manifest.version, waitForWiFi: shouldPair) { [self] message in await self.setStatus(message) }
+                    }).run(credentials: credentials, firmwareVersion: package.manifest.version, waitForWiFi: shouldPair,
+                           step: { [self] value in await self.setStep(value) }) { [self] message in await self.setStatus(message) }
                     prepared = result; wifiPassword = ""
                 }
                 guard let record = prepared else { throw AgentFailure("Complete USB setup first") }
@@ -89,9 +101,10 @@ import MacControlCore
                     controllerAddress = record.hostname + ".local"
                     status = "USB setup complete. Credentials are saved. Verify Wi-Fi and pair the agent on the client’s Mac before deployment."
                     completed = true
+                    step = nil
                     return
                 }
-                status = "Discovering and verifying this controller on the network…"
+                step = .network; status = "Discovering and verifying this controller on the network…"
                 controllerAddress = record.hostname + ".local"
                 var controller = try ControllerSetupClient(host: controllerAddress)
                 do { try await controller.verify(record, timeout: 10) }
@@ -100,19 +113,25 @@ import MacControlCore
                     controllerAddress = record.ip; controller = try ControllerSetupClient(host: controllerAddress)
                     try await controller.verify(record)
                 }
+                networkVerified = true
                 if shouldPair {
-                    try Task.checkCancellation(); status = "Opening the pairing window and pairing this Mac…"
-                    let code = try await controller.pairingCode(adminPassword: record.adminPassword)
-                    await agent.operate("pair", payload: ["hostname": controllerAddress, "port": "80", "code": code])
-                    guard agent.error == nil else { throw AgentFailure(agent.error!) }
-                    try Task.checkCancellation(); status = "Starting and verifying the native agent session…"
+                    if !networkOnly || !matchesEndpoint(agent.state.configuration.hostname) {
+                        try Task.checkCancellation(); step = .pairing; status = "Opening the pairing window and pairing this Mac…"
+                        let code = try await controller.pairingCode(adminPassword: record.adminPassword)
+                        await agent.operate("pair", payload: ["hostname": controllerAddress, "port": "80", "code": code])
+                        guard agent.error == nil else { throw AgentFailure(agent.error!) }
+                    }
+                    pairingSaved = true
+                    try Task.checkCancellation(); step = .connection; status = "Starting and verifying the native agent session…"
                     await agent.operate("start")
                     guard agent.error == nil else { throw AgentFailure(agent.error!) }
                     try await controller.verifyAgent(instanceID: agent.state.configuration.instanceID, readKey: record.keys["READ"]!.raw)
                     status = "Setup complete. The ESP32 confirmed this Mac's native agent session."
                 } else { status = "Controller ready for delivery. This Mac's agent pairing was not changed." }
                 completed = true
+                step = nil
             } catch is CancellationError {
+                paused = true
                 status = "Setup cancelled. If flashing was interrupted, flash again before deployment. Completed credentials remain in Keychain."
             } catch {
                 self.error = error.localizedDescription; status = "Setup stopped. Completed credentials remain in Keychain."
@@ -132,6 +151,7 @@ import MacControlCore
         guard !busy else { return }
         ssid = ""; wifiPassword = ""; adminPassword = ""; confirmPassword = ""; openNetwork = false
         flashFirmware = true; replacePairing = false; prepared = nil; completed = false; error = nil; controllerAddress = ""
+        step = nil; networkVerified = false; pairingSaved = false; paused = false
         status = "Connect the next client's ESP32 COM port and enter its credentials."; refreshPorts()
     }
     func loadSavedCredentials() {
@@ -139,12 +159,14 @@ import MacControlCore
         do {
             guard let raw = try TokenStore.read("provisioning." + selectedSavedID) else { throw AgentFailure("Saved credentials are unavailable in Keychain") }
             let record = try JSONDecoder().decode(PreparedEndpoint.self, from: Data(raw.utf8))
-            remember(record); controllerAddress = record.hostname + ".local"; completed = false; pairThisMac = false; error = nil
+            remember(record); controllerAddress = record.hostname + ".local"; completed = false; error = nil
+            step = nil; networkVerified = false; pairingSaved = false; paused = false
             flashFirmware = false
-            status = "Saved client credentials loaded. Export them or open the Controller on the client’s network."
+            status = "Saved USB setup loaded. Click Resume pairing to connect this Mac, or choose Prepare for another Mac to export the credentials."
         } catch { self.error = "Could not load the selected client credentials from Keychain" }
     }
     private func setStatus(_ value: String) { status = value; fraction = nil }
+    private func setStep(_ value: SetupStep) { step = value }
     private func setFraction(_ value: Double?) { fraction = value }
     func exportCredentials() {
         guard let record = prepared else { return }
@@ -160,12 +182,25 @@ import MacControlCore
 struct DeviceSetupView: View {
     @ObservedObject var setup: DeviceSetupModel
     @ObservedObject var agent: AppModel
+    var resumeOnly = false
     @Environment(\.openURL) private var openURL
     @State private var review = false
+    private var serviceReady: Bool { agent.serviceStatus == "Enabled" && !["inactive", "unavailable"].contains(agent.state.phase) }
     var body: some View {
-        GroupBox("Set up a client's ESP32 over USB") {
+        GroupBox(resumeOnly ? "Saved S3 setup" : "ESP32-S3 details") {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Flash and configure an ESP32-S3 with 8 MB or 16 MB flash. Connect the COM/UART port; its separate USB port supplies HID to the controlled Mac.").foregroundStyle(.secondary)
+                if resumeOnly {
+                    if setup.savedDeviceIDs.isEmpty {
+                        Text("No saved USB setup was found. Choose New ESP32-S3 above to prepare a device.").foregroundStyle(.secondary)
+                    } else {
+                        HStack {
+                            Picker("Saved device", selection: $setup.selectedSavedID) { Text("Select S3").tag(""); ForEach(setup.savedDeviceIDs, id: \.self) { Text($0).tag($0) } }
+                            Button("Load saved setup") { setup.loadSavedCredentials() }.disabled(setup.selectedSavedID.isEmpty)
+                        }.disabled(setup.busy || agent.busy)
+                    }
+                    Text("This reuses the saved controller credentials. Keep the S3 powered and connected to the same network as this Mac.").font(.callout).foregroundStyle(.secondary)
+                } else {
+                Text("Use an ESP32-S3 with 8 MB or 16 MB flash. Connect COM/UART for setup; connect its separate USB/HID port to the controlled Mac.").foregroundStyle(.secondary)
                 HStack {
                     Picker("Serial port", selection: $setup.port) { Text("Select COM port").tag(""); ForEach(setup.ports, id: \.self) { Text($0).tag($0) } }
                     Button("Refresh ports") { setup.refreshPorts() }
@@ -177,35 +212,38 @@ struct DeviceSetupView: View {
                 SecureField("Controller admin password (10–128 bytes)", text: $setup.adminPassword).disabled(setup.busy)
                 SecureField("Confirm controller admin password", text: $setup.confirmPassword).disabled(setup.busy)
                 Toggle("Flash bundled firmware: \(setup.firmwareVersion)", isOn: $setup.flashFirmware).disabled(setup.busy)
-                Picker("After USB setup", selection: $setup.pairThisMac) { Text("Pair and start this Mac's agent").tag(true); Text("Prepare for another Mac").tag(false) }.disabled(setup.busy)
-                if setup.pairThisMac && !agent.state.configuration.hostname.isEmpty {
+                Text(setup.flashFirmware ? "The app uploads firmware, resets the board, then saves Wi-Fi and controller credentials." : "Firmware upload will be skipped. Continue saving credentials over COM/UART.").font(.caption).foregroundStyle(.secondary)
+                }
+                Picker("Set up for", selection: $setup.pairThisMac) { Text("Pair and start on this Mac").tag(true); Text("Prepare for another Mac").tag(false) }.disabled(setup.busy)
+                if setup.pairThisMac && !agent.state.configuration.hostname.isEmpty && (!resumeOnly || !setup.matchesEndpoint(agent.state.configuration.hostname)) {
                     Toggle("Replace this Mac's existing endpoint pairing", isOn: $setup.replacePairing).disabled(setup.busy)
                 }
-                if !setup.savedDeviceIDs.isEmpty {
-                    HStack {
-                        Picker("Saved client setup", selection: $setup.selectedSavedID) { Text("Select device").tag(""); ForEach(setup.savedDeviceIDs, id: \.self) { Text($0).tag($0) } }
-                        Button("Load credentials") { setup.loadSavedCredentials() }.disabled(setup.selectedSavedID.isEmpty)
-                    }.disabled(setup.busy)
-                }
-                Text("Creates READ, CONTROL, and ADMIN keys and saves the credentials in Keychain. Existing keys captured by this wizard are reused on retry.").font(.caption).foregroundStyle(.secondary)
+                if !resumeOnly { Text("Wi-Fi, admin access and three API keys are saved in order. Completed keys stay in Keychain if setup stops.").font(.caption).foregroundStyle(.secondary) }
                 if let error = setup.error { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
-                Text(setup.status).textSelection(.enabled)
+                if !setup.busy { Text(setup.status).font(.callout).textSelection(.enabled) }
                 if setup.busy {
-                    if let fraction = setup.fraction { ProgressView(value: fraction) } else { ProgressView().progressViewStyle(.linear) }
                     Button("Cancel setup") { setup.cancel() }
                 } else {
-                    HStack {
-                        Button(setup.completed ? "Set up again…" : "Review and set up…") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if !resumeOnly {
+                        Button(setup.error != nil || setup.paused ? "Review and retry USB setup…" : "Review and begin USB setup…") {
                             do { try setup.validate(agent: agent); review = true } catch { setup.error = error.localizedDescription }
-                        }.buttonStyle(.borderedProminent).disabled(agent.busy)
-                        if setup.prepared != nil {
-                            if !setup.completed && !(setup.prepared?.ip.isEmpty ?? true) { Button("Finish network / pairing") { setup.begin(agent: agent, networkOnly: true) }.disabled(agent.busy) }
+                        }.buttonStyle(.borderedProminent).disabled(agent.busy || (setup.pairThisMac && !serviceReady))
+                        }
+                        if setup.prepared != nil && (!resumeOnly || setup.prepared?.deviceID == setup.selectedSavedID) {
+                            if !setup.completed && !(setup.prepared?.ip.isEmpty ?? true) && setup.pairThisMac {
+                                Button("Resume pairing") { setup.begin(agent: agent, networkOnly: true) }.buttonStyle(.borderedProminent).disabled(agent.busy || !serviceReady)
+                            } else if resumeOnly && setup.prepared?.ip.isEmpty == true {
+                                Text("No network address was saved. Choose New ESP32-S3 and retry USB setup with Flash firmware off to finish joining Wi-Fi.").font(.caption).foregroundStyle(.secondary)
+                            }
+                            HStack {
                             Button("Export client credentials…") { setup.exportCredentials() }
-                            Button("New client device") { setup.resetForNextDevice() }
+                            if !resumeOnly { Button("Clear for a new S3") { setup.resetForNextDevice() } }
+                            }
                         }
                     }
                 }
-                if let record = setup.prepared {
+                if let record = setup.prepared, !resumeOnly || record.deviceID == setup.selectedSavedID {
                     Divider()
                     Text("\(record.hostname) · \(record.deviceID)").font(.headline)
                     Text("Controller: \(setup.controllerAddress.isEmpty ? (record.ip.isEmpty ? record.hostname + ".local" : record.ip) : setup.controllerAddress)").font(.caption).textSelection(.enabled)
@@ -217,7 +255,7 @@ struct DeviceSetupView: View {
         .onAppear { setup.refreshPorts() }
         .alert("Set up the selected ESP32?", isPresented: $review) {
             Button("Cancel", role: .cancel) { }
-            Button("Set up device") { setup.begin(agent: agent) }
+            Button("Begin setup") { setup.begin(agent: agent) }
         } message: {
             Text("Port: \(setup.port)\nWi-Fi: \(setup.ssid)\n\(setup.flashFirmware ? "Flash firmware and partition table. This can replace existing device data; use a new board or back up an existing one first." : "Keep firmware and configure credentials.")\n\(setup.pairThisMac ? "Pair this Mac after setup." : "Prepare for delivery without changing this Mac's pairing.") Opening the COM port resets the device.")
         }

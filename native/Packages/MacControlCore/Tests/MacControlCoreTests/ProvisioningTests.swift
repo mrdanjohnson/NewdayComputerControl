@@ -61,8 +61,13 @@ final class ProvisioningTests: XCTestCase {
     }
     func testSerialSetupPersistsEveryKeyAndClosesBeforeNetwork() async throws {
         let console = SetupConsole(), vault = SetupVault()
+        let transitions = SetupTransitions()
         let provisioner = SerialProvisioner(console: console, load: { vault.get($0) }, save: { vault.put($0) })
-        let endpoint = try await provisioner.run(credentials: credentials, firmwareVersion: "fixture", progress: { _ in })
+        let endpoint = try await provisioner.run(credentials: credentials, firmwareVersion: "fixture",
+            step: { await transitions.record($0, savedKeys: vault.savedKeyCounts().last ?? 0) }, progress: { _ in })
+        let milestones = await transitions.values()
+        XCTAssertEqual(milestones.map { $0.0 }, [.usb, .network])
+        XCTAssertEqual(milestones.map { $0.1 }, [0, 3])
         XCTAssertEqual(endpoint.ip, "192.168.1.30"); XCTAssertEqual(endpoint.keys.count, 3)
         let closed = await console.didClose(); XCTAssertTrue(closed)
         XCTAssertEqual(vault.savedKeyCounts(), [0,1,2,3,3])
@@ -183,4 +188,10 @@ private final class SetupHTTPFixture {
         guard let line = String(data: pipe.fileHandleForReading.availableData, encoding: .utf8), let parsed = Int(line.trimmingCharacters(in: .whitespacesAndNewlines)) else { process.terminate(); throw AgentFailure("Setup fixture could not start") }; port = parsed
     }
     func stop() { if process.isRunning { process.terminate(); process.waitUntilExit() } }
+}
+
+private actor SetupTransitions {
+    private var recorded: [(SetupStep, Int)] = []
+    func record(_ step: SetupStep, savedKeys: Int) { recorded.append((step, savedKeys)) }
+    func values() -> [(SetupStep, Int)] { recorded }
 }

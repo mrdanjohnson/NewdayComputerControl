@@ -13,12 +13,15 @@ assert job['BundleProgram']=='Contents/MacOS/MacControlAgentService'
 assert job['MachServices']=={'dev.maccontrol.native.agent':True}
 assert job['RunAtLoad'] and job['KeepAlive'] and job['ThrottleInterval']==10
 subprocess.run(['codesign','--verify','--deep','--strict',str(app)],check=True)
+teams=[]
 for name in ['MacControl','MacControlAgentService']:
     binary=app/'Contents/MacOS'/name
     architectures=subprocess.check_output(['lipo','-archs',str(binary)],text=True).split()
     assert set(architectures)=={'arm64','x86_64'}
     sign=subprocess.run(['codesign','-dvv',str(binary)],capture_output=True,text=True,check=True).stderr
     assert 'runtime)' in sign or ',runtime,' in sign
+    teams.append(next(line.split('=',1)[1] for line in sign.splitlines() if line.startswith('TeamIdentifier=')))
+assert teams[0]==teams[1], 'Frontend and service must use the same signing team'
 resources=app/'Contents/Resources'
 manifest=json.loads((resources/'Firmware/manifest.json').read_text())
 assert manifest['chip']=='esp32s3' and manifest['flashBytes']==8*1024*1024
@@ -41,4 +44,4 @@ for arch in ['arm64','x86_64']:
 host_arch='arm64' if platform.machine()=='arm64' else 'x86_64'
 version=subprocess.check_output([str(resources/'ESPTools'/host_arch/'esptool'),'version'],text=True,timeout=20)
 assert provenance['tag'][1:] in version
-print(json.dumps({'app':str(app),'version':info['CFBundleShortVersionString'],'architectures':['arm64','x86_64'],'signature':'verified','launchAgent':'embedded','firmware':manifest['version'],'firmwareSHA256':'verified','flasher':provenance['tag'],'hostFlasherExecution':'passed','flasherArchitectures':['arm64','x86_64'],'distribution':'local development; Developer ID/notarization still required for distribution'},indent=2))
+print(json.dumps({'app':str(app),'version':info['CFBundleShortVersionString'],'architectures':['arm64','x86_64'],'signature':'verified','matchingSigningTeam':teams[0],'launchAgent':'embedded','firmware':manifest['version'],'firmwareSHA256':'verified','flasher':provenance['tag'],'hostFlasherExecution':'passed','flasherArchitectures':['arm64','x86_64'],'distribution':'local development; Developer ID/notarization still required for distribution'},indent=2))

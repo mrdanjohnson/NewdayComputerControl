@@ -13,6 +13,7 @@ import MacControlCore
     @Published var error: String?
     @Published var notice: String?
     @Published var busy = false
+    @Published var currentOperation: String?
     @Published var dirty = false
     @Published var serviceStatus = "Not registered"
     @Published var endpoint = ""
@@ -59,7 +60,7 @@ import MacControlCore
             state.phase = "unavailable"; state.detail = "Background service unavailable. Check Login Items approval or register the service again."
         }
     }
-    private func proxy() throws -> AgentIPC {
+    private func proxy(onError: @escaping (Error) -> Void = { _ in }) throws -> AgentIPC {
         if connection == nil {
             let c = NSXPCConnection(machServiceName: NativeIdentity.service)
             c.remoteObjectInterface = NSXPCInterface(with: AgentIPC.self)
@@ -69,14 +70,16 @@ import MacControlCore
             c.interruptionHandler = { [weak self] in Task { @MainActor in self?.connection = nil } }
             c.resume(); connection = c
         }
-        guard let p = connection?.remoteObjectProxy as? AgentIPC else { throw AgentFailure("Background service unavailable") }
+        guard let p = connection?.remoteObjectProxyWithErrorHandler(onError) as? AgentIPC else { throw AgentFailure("Background service unavailable") }
         return p
     }
     func fetch() async throws -> AgentSnapshot {
-        let p = try proxy()
         return try await withCheckedThrowingContinuation { reply in
             let once = IPCReply(reply)
-            p.snapshot { bytes in do { once.finish(.success(try JSONDecoder().decode(AgentSnapshot.self, from: bytes))) } catch { once.finish(.failure(error)) } }
+            do {
+                let p = try proxy { _ in once.finish(.failure(AgentFailure("Background service unavailable. Use Register service to repair its registration."))) }
+                p.snapshot { bytes in do { once.finish(.success(try JSONDecoder().decode(AgentSnapshot.self, from: bytes))) } catch { once.finish(.failure(error)) } }
+            } catch { once.finish(.failure(error)) }
             Task { try? await Task.sleep(nanoseconds: 4_000_000_000); once.finish(.failure(AgentFailure("Background service did not respond"))) }
         }
     }
@@ -87,9 +90,9 @@ import MacControlCore
     }
     func register() {
         guard !busy, !provisioningActive else { return }
-        busy = true; error = nil
+        busy = true; error = nil; currentOperation = "register"
         Task {
-            defer { busy = false }
+            defer { busy = false; currentOperation = nil }
             do {
                 if service.status == .enabled {
                     do {
@@ -117,17 +120,20 @@ import MacControlCore
     func openLoginSettings() { SMAppService.openSystemSettingsLoginItems() }
     func operate<T: Encodable>(_ operation: String, payload: T) async {
         guard !busy else { return }
-        busy = true; error = nil; notice = nil
-        defer { busy = false }
+        busy = true; error = nil; notice = nil; currentOperation = operation
+        defer { busy = false; currentOperation = nil }
         do {
-            let p = try proxy(), data = try JSONEncoder().encode(payload)
+            let data = try JSONEncoder().encode(payload)
             let result: AgentSnapshot = try await withCheckedThrowingContinuation { reply in
                 let once = IPCReply(reply)
-                p.perform(operation, payload: data) { bytes, message in
-                    if let message { once.finish(.failure(AgentFailure(message))); return }
-                    do { guard let bytes else { throw AgentFailure("Empty service response") }; once.finish(.success(try JSONDecoder().decode(AgentSnapshot.self, from: bytes))) }
-                    catch { once.finish(.failure(error)) }
-                }
+                do {
+                    let p = try proxy { _ in once.finish(.failure(AgentFailure("Background service unavailable. Use Register service to repair its registration."))) }
+                    p.perform(operation, payload: data) { bytes, message in
+                        if let message { once.finish(.failure(AgentFailure(message))); return }
+                        do { guard let bytes else { throw AgentFailure("Empty service response") }; once.finish(.success(try JSONDecoder().decode(AgentSnapshot.self, from: bytes))) }
+                        catch { once.finish(.failure(error)) }
+                    }
+                } catch { once.finish(.failure(error)) }
                 Task {
                     try? await Task.sleep(nanoseconds: 45_000_000_000)
                     let message = ["import", "cutover", "rollback"].contains(operation)
