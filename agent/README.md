@@ -155,11 +155,40 @@ Then install the LaunchAgent (edit the `CHANGE_ME` paths in the plist first):
 ```sh
 cp launchd/com.maccontrol.agent.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.maccontrol.agent.plist
-# launchctl unload ~/Library/LaunchAgents/com.maccontrol.agent.plist   # to remove
+# Use ./uninstall.sh to stop the agent and remove its startup service.
 ```
 
 The LaunchAgent runs `python -m maccontrol_agent --daemon` with
 `RunAtLoad` + `KeepAlive` (restart throttling via `ThrottleInterval 10`).
+
+## Uninstall the Python agent
+
+Run from the `agent` directory as the user who installed it, without `sudo`:
+
+```sh
+./uninstall.sh --dry-run  # preview the service, plist, and matching processes
+./uninstall.sh
+```
+
+The uninstaller unloads `com.maccontrol.agent`, deletes
+`~/Library/LaunchAgents/com.maccontrol.agent.plist` so it does not start at
+login, and stops your Python processes running `-m maccontrol_agent`, including
+manually launched agents. It allows five seconds for termination before
+force-stopping remaining agents, and verifies that the service and agents are
+gone. It is safe to run again. `./install.sh --uninstall` runs the same script.
+
+Source files, `agent/.venv`, `~/.maccontrol/agent.json` (including the pairing
+token), logs, and `~/.maccontrol/endpoint.keys` are kept. The native MacControl
+service and endpoint pairing are unaffected. If switching to the native app,
+complete [Import Python settings and Take over from Python](../native/README.md#replace-an-existing-python-installation)
+first: uninstall removes the legacy plist required for takeover and Restore
+Python. Reinstalling the Python service restores its plist.
+
+Uninstall also keeps any scheduled power-on event. Check `pmset -g sched`;
+if you want to remove all repeating power events, run `sudo pmset repeat cancel`.
+This affects all repeating power events on the Mac, including ones set by other
+tools. Combining `--uninstall` with `--no-poweron` does not cancel the schedule.
+If you separately enabled `autorestart`, uninstall leaves that setting too.
 
 ## Pairing flow
 

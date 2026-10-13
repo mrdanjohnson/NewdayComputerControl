@@ -143,8 +143,8 @@ AGENT OPTIONS
   --poll-interval S    Polling interval, 2-30 (default 5).
   --headless           LaunchAgent runs the agent with --headless (no UI).
   --no-start           Install and configure, but do not load the LaunchAgent.
-  --uninstall          Unload and remove the LaunchAgent (venv, state file,
-                       and pairing token are kept).
+  --uninstall          Run uninstall.sh: remove the LaunchAgent and stop this
+                       user's Python agents (venv, state, and token kept).
   -h, --help           Show this help.
 
 OPERATING THE AGENT AFTER INSTALL
@@ -205,12 +205,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$UNINSTALL" -eq 1 ]]; then
-    log "Unloading LaunchAgent $PLIST_LABEL"
-    launchctl bootout "gui/$UID/$PLIST_LABEL" 2>/dev/null \
-        || launchctl unload "$PLIST_DEST" 2>/dev/null || true
-    rm -f "$PLIST_DEST"
-    log "Removed $PLIST_DEST (venv, ~/.maccontrol, and pairing token kept)."
-    exit 0
+    exec /bin/bash "$AGENT_DIR/uninstall.sh"
 fi
 
 [[ "$FLASH" -eq 0 || "$NO_FLASH" -eq 0 ]] \
